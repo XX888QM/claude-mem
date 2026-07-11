@@ -10,6 +10,18 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider, isGeminiSelected, isGeminiAvailable } from '../../GeminiProvider.js';
 import { OpenRouterProvider, isOpenRouterSelected, isOpenRouterAvailable } from '../../OpenRouterProvider.js';
+import {
+  CodexProvider,
+  getCodexQuotaCooldownRemainingMs,
+  isCodexQuotaCooldownActive,
+  isCodexSelected,
+} from '../../CodexProvider.js';
+import {
+  GrokProvider,
+  getGrokQuotaCooldownRemainingMs,
+  isGrokQuotaCooldownActive,
+  isGrokSelected,
+} from '../../GrokProvider.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { SessionEventBroadcaster } from '../../events/SessionEventBroadcaster.js';
@@ -59,6 +71,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private sdkAgent: ClaudeProvider,
     private geminiAgent: GeminiProvider,
     private openRouterAgent: OpenRouterProvider,
+    private codexAgent: CodexProvider,
+    private grokAgent: GrokProvider,
     private eventBroadcaster: SessionEventBroadcaster,
     private workerService: WorkerService,
     private completionHandler: SessionCompletionHandler,
@@ -66,7 +80,13 @@ export class SessionRoutes extends BaseRouteHandler {
     super();
   }
 
-  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' {
+  private getSelectedProvider(): 'claude' | 'gemini' | 'openrouter' | 'codex' | 'grok' {
+    if (isGrokSelected()) {
+      return 'grok';
+    }
+    if (isCodexSelected()) {
+      return 'codex';
+    }
     if (isOpenRouterSelected() && isOpenRouterAvailable()) {
       return 'openrouter';
     }
@@ -80,6 +100,24 @@ export class SessionRoutes extends BaseRouteHandler {
     const selectedProvider = this.getSelectedProvider();
 
     if (!session.generatorPromise) {
+      if (selectedProvider === 'codex' && isCodexQuotaCooldownActive()) {
+        logger.debug('SESSION', 'Skipping Codex generator start during quota cooldown', {
+          sessionId: sessionDbId,
+          source,
+          retryInMs: getCodexQuotaCooldownRemainingMs(),
+        });
+        return;
+      }
+
+      if (selectedProvider === 'grok' && isGrokQuotaCooldownActive()) {
+        logger.debug('SESSION', 'Skipping Grok generator start during quota cooldown', {
+          sessionId: sessionDbId,
+          source,
+          retryInMs: getGrokQuotaCooldownRemainingMs(),
+        });
+        return;
+      }
+
       if (selectedProvider === 'claude') {
         const claudeStatus = getDependencyStatus('claude_cli');
         if (claudeStatus?.kind === 'setup_required') {
@@ -116,7 +154,7 @@ export class SessionRoutes extends BaseRouteHandler {
           }
         }
       }
-      await this.applyTierRouting(session);
+      await this.applyTierRouting(session, selectedProvider);
       await this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
     }
@@ -135,7 +173,7 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private async startGeneratorWithProvider(
     session: ReturnType<typeof this.sessionManager.getSession>,
-    provider: 'claude' | 'gemini' | 'openrouter',
+    provider: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'grok',
     source: string
   ): Promise<void> {
     if (!session) return;
@@ -147,8 +185,24 @@ export class SessionRoutes extends BaseRouteHandler {
       session.abortController = new AbortController();
     }
 
-    const agent = provider === 'openrouter' ? this.openRouterAgent : (provider === 'gemini' ? this.geminiAgent : this.sdkAgent);
-    const agentName = provider === 'openrouter' ? 'OpenRouter' : (provider === 'gemini' ? 'Gemini' : 'Claude SDK');
+    const agent = provider === 'grok'
+      ? this.grokAgent
+      : provider === 'codex'
+        ? this.codexAgent
+        : provider === 'openrouter'
+          ? this.openRouterAgent
+          : provider === 'gemini'
+            ? this.geminiAgent
+            : this.sdkAgent;
+    const agentName = provider === 'grok'
+      ? 'Grok CLI'
+      : provider === 'codex'
+        ? 'Codex CLI'
+        : provider === 'openrouter'
+          ? 'OpenRouter'
+          : provider === 'gemini'
+            ? 'Gemini'
+            : 'Claude SDK';
 
     const actualQueueDepth = this.sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);
 
@@ -565,7 +619,16 @@ export class SessionRoutes extends BaseRouteHandler {
     'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
   ]);
 
-  private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
+  private async applyTierRouting(
+    session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>,
+    provider: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'grok',
+  ): Promise<void> {
+    // CLI providers pin their model via settings (not Claude tier aliases).
+    if (provider === 'codex' || provider === 'grok') {
+      session.modelOverride = undefined;
+      return;
+    }
+
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;

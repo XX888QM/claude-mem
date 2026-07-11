@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 
+// Decode percent-encoded path segments (Chinese/spaces) — .pathname alone breaks Bun.file on macOS.
 const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
 describe('MCP tool inputSchema declarations', () => {

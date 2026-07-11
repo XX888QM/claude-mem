@@ -2451,14 +2451,80 @@ export class SessionStore {
     const timestampEpoch = overrideTimestampEpoch ?? Date.now();
     const timestampIso = new Date(timestampEpoch).toISOString();
 
-    const stmt = this.db.prepare(`
+    return {
+      id: this.upsertSummaryRow(
+        memorySessionId,
+        project,
+        summary,
+        promptNumber,
+        discoveryTokens,
+        timestampIso,
+        timestampEpoch,
+      ),
+      createdAtEpoch: timestampEpoch
+    };
+  }
+
+  private upsertSummaryRow(
+    memorySessionId: string,
+    project: string,
+    summary: {
+      request: string;
+      investigated: string;
+      learned: string;
+      completed: string;
+      next_steps: string;
+      notes: string | null;
+    },
+    promptNumber: number | undefined,
+    discoveryTokens: number,
+    timestampIso: string,
+    timestampEpoch: number,
+  ): number {
+    const existing = promptNumber !== undefined
+      ? this.db.prepare(`
+          SELECT id FROM session_summaries
+          WHERE memory_session_id = ? AND prompt_number = ?
+          ORDER BY created_at_epoch DESC, id DESC LIMIT 1
+        `).get(memorySessionId, promptNumber) as { id: number } | null
+      : summary.request
+        ? this.db.prepare(`
+            SELECT id FROM session_summaries
+            WHERE memory_session_id = ? AND request = ?
+            ORDER BY created_at_epoch DESC, id DESC LIMIT 1
+          `).get(memorySessionId, summary.request) as { id: number } | null
+        : null;
+
+    if (existing) {
+      this.db.prepare(`
+        UPDATE session_summaries SET
+          project = ?, request = ?, investigated = ?, learned = ?, completed = ?,
+          next_steps = ?, notes = ?, prompt_number = ?, discovery_tokens = ?,
+          created_at = ?, created_at_epoch = ?
+        WHERE id = ?
+      `).run(
+        project,
+        summary.request,
+        summary.investigated,
+        summary.learned,
+        summary.completed,
+        summary.next_steps,
+        summary.notes,
+        promptNumber ?? null,
+        discoveryTokens,
+        timestampIso,
+        timestampEpoch,
+        existing.id,
+      );
+      return existing.id;
+    }
+
+    const result = this.db.prepare(`
       INSERT INTO session_summaries
       (memory_session_id, project, request, investigated, learned, completed,
        next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const result = stmt.run(
+    `).run(
       memorySessionId,
       project,
       summary.request,
@@ -2467,16 +2533,12 @@ export class SessionStore {
       summary.completed,
       summary.next_steps,
       summary.notes,
-      promptNumber || null,
+      promptNumber ?? null,
       discoveryTokens,
       timestampIso,
-      timestampEpoch
+      timestampEpoch,
     );
-
-    return {
-      id: Number(result.lastInsertRowid),
-      createdAtEpoch: timestampEpoch
-    };
+    return Number(result.lastInsertRowid);
   }
 
   storeObservations(
@@ -2567,28 +2629,15 @@ export class SessionStore {
 
       let summaryId: number | null = null;
       if (summary) {
-        const summaryStmt = this.db.prepare(`
-          INSERT INTO session_summaries
-          (memory_session_id, project, request, investigated, learned, completed,
-           next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        const result = summaryStmt.run(
+        summaryId = this.upsertSummaryRow(
           memorySessionId,
           project,
-          summary.request,
-          summary.investigated,
-          summary.learned,
-          summary.completed,
-          summary.next_steps,
-          summary.notes,
-          promptNumber || null,
+          summary,
+          promptNumber,
           discoveryTokens,
           timestampIso,
-          timestampEpoch
+          timestampEpoch,
         );
-        summaryId = Number(result.lastInsertRowid);
       }
 
       return { observationIds, summaryId, createdAtEpoch: timestampEpoch };

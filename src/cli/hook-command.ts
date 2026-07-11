@@ -116,9 +116,14 @@ export async function hookCommand(platform: string, event: string, options: Hook
   // To bypass the buffer for a specific write, use emitDiagnostic /
   // emitBlockingError from src/shared/hook-io.ts. Direct process.stderr.write
   // calls are buffered.
-  const stderrBuffer = installHookStderrBuffer();
-
   const adapter = getPlatformAdapter(platform);
+  if (process.env.CLAUDE_MEM_SUPPRESS_HOOKS === '1') {
+    emitModelContext(adapter, { continue: true, suppressOutput: true });
+    exitGraceful(options);
+    return HOOK_EXIT_CODES.SUCCESS;
+  }
+
+  const stderrBuffer = installHookStderrBuffer();
   const handler = getEventHandler(event);
 
   try {

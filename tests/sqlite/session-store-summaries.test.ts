@@ -80,6 +80,28 @@ describe('SessionStore summaries', () => {
       store.storeSummary(mem, 'project', summary({ notes: null }));
       expect(store.getSummaryForSession(mem)?.notes).toBeNull();
     });
+
+    it('updates the existing summary for the same session prompt', () => {
+      const mem = session('mem-sum-update');
+      const first = store.storeSummary(mem, 'project', summary({ request: 'First wording' }), 3);
+      const second = store.storeSummary(mem, 'project', summary({ request: 'Final wording' }), 3);
+
+      expect(second.id).toBe(first.id);
+      expect(store.db.query('SELECT COUNT(*) AS count FROM session_summaries').get())
+        .toEqual({ count: 1 });
+      expect(store.getSummaryForSession(mem)?.request).toBe('Final wording');
+    });
+
+    it('deduplicates summaries written through storeObservations', () => {
+      const mem = session('mem-sum-batch-update');
+      const first = store.storeObservations(mem, 'project', [], summary({ request: 'Draft' }), 4);
+      const second = store.storeObservations(mem, 'project', [], summary({ request: 'Final' }), 4);
+
+      expect(second.summaryId).toBe(first.summaryId);
+      expect(store.db.query('SELECT COUNT(*) AS count FROM session_summaries').get())
+        .toEqual({ count: 1 });
+      expect(store.getSummaryForSession(mem)?.request).toBe('Final');
+    });
   });
 
   describe('getSummaryForSession', () => {

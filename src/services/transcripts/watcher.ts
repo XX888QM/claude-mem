@@ -241,7 +241,15 @@ export class TranscriptWatcher {
   ): Promise<void> {
     if (this.tailers.has(filePath)) return;
 
+    // Skip ephemeral observer CLI workdirs (deleted after each Grok/Codex call)
+    // so fs.watch does not throw ENOENT spam against vanished temp sessions.
+    if (this.isEphemeralObserverTranscriptPath(filePath)) {
+      logger.debug('TRANSCRIPT', 'Skipping ephemeral observer transcript path', { file: filePath });
+      return;
+    }
+
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
+    const cwdOverride = this.extractCwdFromGrokPath(filePath, watch);
 
     let offset = this.state.offsets[filePath] ?? 0;
     if (offset === 0 && watch.startAtEnd) {
@@ -257,7 +265,7 @@ export class TranscriptWatcher {
       filePath,
       offset,
       async (line: string) => {
-        await this.handleLine(line, watch, schema, filePath, sessionIdOverride);
+        await this.handleLine(line, watch, schema, filePath, sessionIdOverride, cwdOverride);
       },
       (newOffset: number) => {
         this.state.offsets[filePath] = newOffset;
@@ -279,11 +287,18 @@ export class TranscriptWatcher {
     watch: WatchTarget,
     schema: TranscriptSchema,
     filePath: string,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    cwdOverride?: string | null,
   ): Promise<void> {
     try {
       const entry = JSON.parse(line);
-      await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined);
+      await this.processor.processEntry(
+        entry,
+        watch,
+        schema,
+        sessionIdOverride ?? undefined,
+        cwdOverride ?? undefined,
+      );
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.debug('TRANSCRIPT', 'Failed to parse transcript line', {
@@ -303,5 +318,51 @@ export class TranscriptWatcher {
   private extractSessionIdFromPath(filePath: string): string | null {
     const match = filePath.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
     return match ? match[0] : null;
+  }
+
+  private isEphemeralObserverTranscriptPath(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/');
+    // Only skip observer CLI workdirs that leak into Grok/Codex session trees.
+    // Do NOT blanket-skip /var/folders — unit tests and legitimate temp watches
+    // use those paths.
+    const underGrokOrCodexSessions =
+      /\/\.grok\/sessions\//i.test(normalized)
+      || /\/\.codex\/sessions\//i.test(normalized)
+      || /\/\.codex\/archived_sessions\//i.test(normalized);
+
+    if (!underGrokOrCodexSessions) return false;
+
+    return (
+      /claude-mem-grok-/i.test(normalized)
+      || /claude-mem-codex-/i.test(normalized)
+      || /%2Fprivate%2Fvar%2Ffolders/i.test(normalized)
+      || /%2Fvar%2Ffolders/i.test(normalized)
+      || /%2Ftmp%2Fclaude-mem-/i.test(normalized)
+      || /\/private\/var\/folders\//i.test(normalized)
+      || /\/tmp\/claude-mem-grok-/i.test(normalized)
+      || /\/tmp\/claude-mem-codex-/i.test(normalized)
+    );
+  }
+
+  /**
+   * Grok stores sessions as:
+   *   ~/.grok/sessions/<url-encoded-cwd>/<session-uuid>/updates.jsonl
+   * Decode the parent folder when the watch is named/schemad as grok.
+   */
+  private extractCwdFromGrokPath(filePath: string, watch: WatchTarget): string | null {
+    const schemaName = typeof watch.schema === 'string' ? watch.schema : watch.schema?.name;
+    const isGrok = watch.name === 'grok' || schemaName === 'grok';
+    if (!isGrok) return null;
+
+    const normalized = filePath.replace(/\\/g, '/');
+    const match = normalized.match(/\/sessions\/([^/]+)\/[0-9a-f-]{36}\//i);
+    if (!match?.[1]) return null;
+
+    try {
+      const decoded = decodeURIComponent(match[1]);
+      return decoded.startsWith('/') || /^[A-Za-z]:[\\/]/.test(decoded) ? decoded : null;
+    } catch {
+      return null;
+    }
   }
 }

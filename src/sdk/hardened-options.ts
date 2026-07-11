@@ -38,9 +38,12 @@
  */
 
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { OBSERVER_SESSIONS_DIR } from '../shared/paths.js';
+import { join } from 'node:path';
+import { DATA_DIR, OBSERVER_SESSIONS_DIR } from '../shared/paths.js';
 import { recordObserverToolAttempt } from '../utils/observer-audit.js';
 import { logger } from '../utils/logger.js';
+
+export const OBSERVER_CLAUDE_CONFIG_DIR = join(DATA_DIR, 'observer-claude-config');
 
 /**
  * Tools explicitly named in the deny-list. `tools: []` already disables all
@@ -88,6 +91,12 @@ export interface HardenedSdkOptionsInput {
  * cannot drift between them.
  */
 export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options {
+  const env = {
+    ...input.env,
+    // Keep observer transcripts out of CC Switch's primary session list.
+    CLAUDE_CONFIG_DIR: OBSERVER_CLAUDE_CONFIG_DIR,
+  };
+
   const canUseTool: Options['canUseTool'] = async (toolName, toolInput) => {
     recordObserverToolAttempt({
       source: input.source,
@@ -115,7 +124,7 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
   return {
     model: input.model,
     cwd: input.cwd ?? OBSERVER_SESSIONS_DIR,
-    env: input.env,
+    env,
     pathToClaudeCodeExecutable: input.pathToClaudeCodeExecutable,
     ...(input.abortController ? { abortController: input.abortController } : {}),
     ...(input.resume ? { resume: input.resume } : {}),

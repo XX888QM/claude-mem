@@ -128,8 +128,10 @@ describe('Claude setup-required generator gate', () => {
       sessionManager as any,
       {} as any,
       claudeProvider as any,
-      { startSession: async () => {} } as any,
-      { startSession: async () => {} } as any,
+      { startSession: async () => {} } as any, // gemini
+      { startSession: async () => {} } as any, // openrouter
+      { startSession: async () => {} } as any, // codex
+      { startSession: async () => {} } as any, // grok
       {} as any,
       {} as any,
       {

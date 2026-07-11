@@ -67,7 +67,11 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     /\bweekly\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
     /\b(reached|exceeded|exhausted)\b.*\bweekly\b.*\b(limit|quota)\b/.test(text) ||
     /\bsubscription\b.*\b(limit|quota)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
-    /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text)
+    /\b(rate limit|quota)\b.*\b(subscription|weekly|claude usage)\b.*\b(reached|exceeded|exhausted|reset|resets|try again)\b/.test(text) ||
+    // Grok / xAI membership session cap (e.g. "You've hit your session limit · resets 3:50pm")
+    /\bsession limit\b/.test(text) ||
+    /\bhit your (session|usage|rate) limit\b/.test(text) ||
+    /\byou'?ve hit your\b.*\blimit\b/.test(text)
   );
 }
 
