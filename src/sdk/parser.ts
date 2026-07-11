@@ -38,6 +38,42 @@ export type ParseResult =
   | { valid: true; observations: ParsedObservation[]; summary: ParsedSummary | null }
   | { valid: false };
 
+const OBSERVATION_TYPE_ALIASES: Record<string, string> = {
+  bug: 'bugfix',
+  fix: 'bugfix',
+  'bug-fix': 'bugfix',
+  verification: 'discovery',
+  verify: 'discovery',
+  test: 'discovery',
+  testing: 'discovery',
+  finding: 'discovery',
+  'repo-state': 'discovery',
+  state: 'discovery',
+  task: 'change',
+  milestone: 'change',
+  docs: 'change',
+  documentation: 'change',
+  config: 'change',
+  configuration: 'change',
+  security: 'security_note',
+  'security-alert': 'security_alert',
+  'security-issue': 'security_alert',
+  'security-note': 'security_note',
+};
+
+function buildSkippedSummary(skip_reason: string | null): ParsedSummary {
+  return {
+    request: null,
+    investigated: null,
+    learned: null,
+    completed: null,
+    next_steps: null,
+    notes: null,
+    skipped: true,
+    skip_reason,
+  };
+}
+
 export function parseAgentXml(raw: string, correlationId?: string | number): ParseResult {
   if (typeof raw !== 'string' || !raw.trim()) {
     return { valid: false };
@@ -50,16 +86,15 @@ export function parseAgentXml(raw: string, correlationId?: string | number): Par
     return {
       valid: true,
       observations: [],
-      summary: {
-        request: null,
-        investigated: null,
-        learned: null,
-        completed: null,
-        next_steps: null,
-        notes: null,
-        skipped: true,
-        skip_reason: skipMatch[1] ?? null,
-      },
+      summary: buildSkippedSummary(skipMatch[1] ?? null),
+    };
+  }
+
+  if (/^\s*<observations\b[^>]*\/>\s*$/i.test(raw) || /^\s*<observations\b[^>]*>\s*<\/observations>\s*$/i.test(raw)) {
+    return {
+      valid: true,
+      observations: [],
+      summary: buildSkippedSummary('empty_observations'),
     };
   }
 
@@ -104,11 +139,12 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
-    const fallbackType = validTypes.includes('change') ? 'change' : validTypes[0];
+    const fallbackType = validTypes[0];
     let finalType = fallbackType;
     if (type) {
-      if (validTypes.includes(type.trim())) {
-        finalType = type.trim();
+      const normalizedType = normalizeObservationType(type, validTypes);
+      if (normalizedType) {
+        finalType = normalizedType;
       } else {
         logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
@@ -148,6 +184,17 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
   }
 
   return observations;
+}
+
+function normalizeObservationType(type: string, validTypes: string[]): string | null {
+  const raw = type.trim();
+  if (validTypes.includes(raw)) return raw;
+
+  const normalized = raw.toLowerCase().replace(/[_\s]+/g, '-');
+  if (validTypes.includes(normalized)) return normalized;
+
+  const alias = OBSERVATION_TYPE_ALIASES[normalized];
+  return alias && validTypes.includes(alias) ? alias : null;
 }
 
 function parseSummaryBlock(text: string, correlationId?: string | number): ParsedSummary | null {

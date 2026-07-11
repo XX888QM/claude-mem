@@ -62,12 +62,14 @@ describe('Claude setup-required generator gate', () => {
     let removeSessionImmediateCalls = 0;
     let repairedRunResolve: (() => void) | null = null;
 
+    let bufferedCount = 1;
     const sessionManager = {
       getSession: () => activeSession,
       getMessageBuffer: () => ({
-        getPendingCount: () => 1,
+        getPendingCount: () => bufferedCount,
         peekTypes: () => [],
       }),
+      resetProcessingToPending: async () => 0,
       removeSessionImmediate: () => {
         removeSessionImmediateCalls += 1;
         activeSession = undefined;
@@ -139,6 +141,7 @@ describe('Claude setup-required generator gate', () => {
     expect(getDependencyStatus('claude_cli')).toBeNull();
     expect(session.generatorPromise).not.toBeNull();
 
+    bufferedCount = 0; // drained — a clean exit with an empty buffer finalizes
     repairedRunResolve?.();
     await session.generatorPromise;
 
