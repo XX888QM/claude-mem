@@ -126,6 +126,37 @@ describe('GrokProvider', () => {
     expect(defaults.CLAUDE_MEM_GROK_REASONING_EFFORT).toBe('medium');
   });
 
+  it('uses summary-only model and effort without changing observation config', () => {
+    process.env.CLAUDE_MEM_SUMMARY_PROVIDER = 'grok';
+    process.env.CLAUDE_MEM_SUMMARY_MODEL = 'grok-4.5';
+    process.env.CLAUDE_MEM_SUMMARY_EFFORT = 'high';
+    try {
+      class TestGrokProvider extends GrokProvider {
+        summaryConfig(config: { apiKey: string; model: string; reasoningEffort: string }) {
+          return this.getSummaryConfig(config);
+        }
+      }
+
+      const observationConfig = {
+        apiKey: 'grok-cli',
+        model: 'grok-4.5',
+        reasoningEffort: 'low',
+      };
+      const provider = new TestGrokProvider({} as any, {} as any);
+
+      expect(provider.summaryConfig(observationConfig)).toEqual({
+        apiKey: 'grok-cli',
+        model: 'grok-4.5',
+        reasoningEffort: 'high',
+      });
+      expect(observationConfig.reasoningEffort).toBe('low');
+    } finally {
+      delete process.env.CLAUDE_MEM_SUMMARY_PROVIDER;
+      delete process.env.CLAUDE_MEM_SUMMARY_MODEL;
+      delete process.env.CLAUDE_MEM_SUMMARY_EFFORT;
+    }
+  });
+
   it('preserves claimed work when the Grok quota is exhausted', async () => {
     if (process.platform === 'win32') return;
 

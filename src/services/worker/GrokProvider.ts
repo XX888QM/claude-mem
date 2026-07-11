@@ -118,6 +118,17 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
     };
   }
 
+  protected override getSummaryConfig(config: GrokConfig): GrokConfig {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_SUMMARY_PROVIDER !== 'grok') return config;
+
+    return {
+      ...config,
+      model: settings.CLAUDE_MEM_SUMMARY_MODEL || config.model,
+      reasoningEffort: normalizeReasoningEffort(settings.CLAUDE_MEM_SUMMARY_EFFORT),
+    };
+  }
+
   protected missingApiKeyError(): Error {
     return new Error('Grok CLI is not available. Install Grok and sign in before selecting the Grok provider.');
   }
