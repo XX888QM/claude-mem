@@ -100,6 +100,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     return history;
   }
 
+  /** Allow providers to apply summary-only model settings per batch. */
+  protected getSummaryConfig(config: TConfig): TConfig {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const summaryModel = resolveSummaryTierModel(config.model, settings);
+    if (summaryModel === config.model) return config;
+
+    logger.debug('SESSION', 'Tier routing: summary model', {
+      model: summaryModel,
+    });
+    return { ...config, model: summaryModel };
+  }
+
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
     const { apiKey, model } = config;
@@ -303,14 +315,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    const summaryModel = resolveSummaryTierModel(config.model, settings);
-    const summaryConfig = summaryModel === config.model ? config : { ...config, model: summaryModel };
-    if (summaryConfig !== config) {
-      logger.debug('SESSION', 'Tier routing: summary model', {
-        sessionId: session.sessionDbId, model: summaryModel
-      });
-    }
+    const summaryConfig = this.getSummaryConfig(config);
     const summaryResponse = await this.query(
       this.selectHistoryForQuery(session.conversationHistory),
       summaryConfig,

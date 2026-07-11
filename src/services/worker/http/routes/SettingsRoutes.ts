@@ -86,6 +86,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
       'CLAUDE_MEM_CODEX_MODEL',
       'CLAUDE_MEM_CODEX_REASONING_EFFORT',
+      'CLAUDE_MEM_SUMMARY_PROVIDER',
+      'CLAUDE_MEM_SUMMARY_MODEL',
+      'CLAUDE_MEM_SUMMARY_EFFORT',
       'CLAUDE_MEM_GROK_MODEL',
       'CLAUDE_MEM_GROK_REASONING_EFFORT',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
@@ -156,6 +159,19 @@ export class SettingsRoutes extends BaseRouteHandler {
       const validCodexEfforts = ['low', 'medium', 'high', 'xhigh'];
       if (!validCodexEfforts.includes(settings.CLAUDE_MEM_CODEX_REASONING_EFFORT)) {
         return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: low, medium, high, xhigh' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SUMMARY_PROVIDER) {
+      if (settings.CLAUDE_MEM_SUMMARY_PROVIDER !== 'codex') {
+        return { valid: false, error: 'CLAUDE_MEM_SUMMARY_PROVIDER currently supports only "codex"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_SUMMARY_EFFORT) {
+      const validSummaryEfforts = ['low', 'medium', 'high', 'xhigh'];
+      if (!validSummaryEfforts.includes(settings.CLAUDE_MEM_SUMMARY_EFFORT)) {
+        return { valid: false, error: 'CLAUDE_MEM_SUMMARY_EFFORT must be one of: low, medium, high, xhigh' };
       }
     }
 

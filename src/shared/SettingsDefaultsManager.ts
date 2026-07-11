@@ -19,6 +19,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: string;
   CLAUDE_MEM_CODEX_MODEL: string;
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
+  CLAUDE_MEM_SUMMARY_PROVIDER: string;
+  CLAUDE_MEM_SUMMARY_MODEL: string;
+  CLAUDE_MEM_SUMMARY_EFFORT: string;
   CLAUDE_MEM_GROK_MODEL: string;
   CLAUDE_MEM_GROK_REASONING_EFFORT: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
@@ -117,6 +120,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',  // Rate limiting ON by default for free tier users
     CLAUDE_MEM_CODEX_MODEL: 'gpt-5.6-luna',
     CLAUDE_MEM_CODEX_REASONING_EFFORT: 'medium',
+    CLAUDE_MEM_SUMMARY_PROVIDER: 'codex',
+    CLAUDE_MEM_SUMMARY_MODEL: 'gpt-5.6-luna',
+    CLAUDE_MEM_SUMMARY_EFFORT: 'high',
     CLAUDE_MEM_GROK_MODEL: 'grok-4.5',
     CLAUDE_MEM_GROK_REASONING_EFFORT: 'medium',
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
