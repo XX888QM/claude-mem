@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
+import { logger } from '../../src/utils/logger.js';
 
 import { parseAgentXml } from '../../src/sdk/parser.js';
 
@@ -23,7 +24,7 @@ function expectObservation(raw: string) {
 beforeEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
   modeManager.activeMode = {
-    observation_types: [{ id: 'bugfix' }, { id: 'change' }, { id: 'discovery' }, { id: 'refactor' }],
+    observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }, { id: 'change' }],
     observation_concepts: [],
   };
 });
@@ -135,7 +136,7 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
-  it('uses change as fallback when type is missing', () => {
+  it('uses first mode type as fallback when type is missing', () => {
     const xml = `<observation>
       <title>Missing type field</title>
     </observation>`;
@@ -143,16 +144,42 @@ describe('parseAgentXml — observations', () => {
     const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('change');
+    expect(result[0].type).toBe('bugfix');
   });
 
-  it('uses change as fallback for an unsupported type', () => {
-    const result = expectObservation(`<observation>
-      <type>milestone</type>
-      <title>Reached the final verification step</title>
-    </observation>`);
+  it('normalizes common model type aliases without parser errors', () => {
+    const errorSpy = spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      const xml = `
+        <observation>
+          <type>verification</type>
+          <title>Verified test runner status</title>
+        </observation>
+        <observation>
+          <type>bug</type>
+          <title>Fixed parser type fallback noise</title>
+        </observation>
+        <observation>
+          <type>finding</type>
+          <title>Found queue depth tracked in memory</title>
+        </observation>
+        <observation>
+          <type>repo-state</type>
+          <title>Working tree has staged merge resolutions</title>
+        </observation>
+        <observation>
+          <type>task</type>
+          <title>Synced plugin bundles to install locations</title>
+        </observation>
+      `;
 
-    expect(result[0].type).toBe('change');
+      const result = expectObservation(xml);
+
+      expect(result.map(obs => obs.type)).toEqual(['discovery', 'bugfix', 'discovery', 'discovery', 'change']);
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('preserves a reporter-shaped unsupported observation type', () => {
@@ -170,6 +197,26 @@ describe('parseAgentXml — observations', () => {
   it('returns a fail-fast result when no observation/summary blocks are present', () => {
     const result = parseAgentXml('Some text without any observations.');
     expect(result.valid).toBe(false);
+  });
+
+  it('treats an empty <observations/> wrapper as a valid no-op result', () => {
+    const result = parseAgentXml('<observations/>');
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(0);
+    expect(result.summary?.skipped).toBe(true);
+    expect(result.summary?.skip_reason).toBe('empty_observations');
+  });
+
+  it('treats an empty paired <observations> wrapper as a valid no-op result', () => {
+    const result = parseAgentXml('<observations>  \n </observations>');
+
+    expect(result.valid).toBe(true);
+    if (!result.valid) return;
+    expect(result.observations).toHaveLength(0);
+    expect(result.summary?.skipped).toBe(true);
+    expect(result.summary?.skip_reason).toBe('empty_observations');
   });
 
   it('parses files_read and files_modified arrays correctly', () => {

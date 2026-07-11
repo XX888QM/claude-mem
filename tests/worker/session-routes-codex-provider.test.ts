@@ -50,6 +50,7 @@ describe('SessionRoutes Codex provider', () => {
         getPendingCount: () => 1,
         peekTypes: () => [],
       }),
+      resetProcessingToPending: async () => 0,
       removeSessionImmediate: () => {},
     };
 
