@@ -493,9 +493,12 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
     const { hookCommand } = await import('../src/cli/hook-command.js');
     expect(typeof hookCommand).toBe('function');
 
-    const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
-    ).text();
+    // fileURLToPath decodes percent-encoded path segments (e.g. Chinese dirs).
+    // new URL(...).pathname alone leaves %E5%BC... on some runtimes and breaks Bun.file.
+    const { fileURLToPath } = await import('node:url');
+    const hookCommandPath = fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url));
+    expect(hookCommandPath).not.toContain('%');
+    const hookCommandSource = await Bun.file(hookCommandPath).text();
 
     // Diagnostics still go through the structured logger.
     expect(hookCommandSource).toContain("import { logger }");

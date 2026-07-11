@@ -64,7 +64,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   protected abstract missingApiKeyError(): Error;
 
   /** Issue the actual HTTP request and normalize its response. */
-  protected abstract query(history: ConversationMessage[], config: TConfig): Promise<ProviderQueryResult>;
+  protected abstract query(
+    history: ConversationMessage[],
+    config: TConfig,
+    session?: ActiveSession,
+  ): Promise<ProviderQueryResult>;
 
   /** Estimate token count for a single message body. */
   protected abstract estimateTokens(text: string): number;
@@ -74,6 +78,23 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   /** Hook for per-session setup that runs once config is resolved (e.g. endpointClass). */
   protected prepareSessionExtras(_session: ActiveSession, _config: TConfig): void {}
+
+  /**
+   * Whether to spend an LLM call on the large init/continuation skeleton before
+   * draining the observation/summary queue. Stateless CLI providers (Grok) should
+   * return false — each task is a fresh single-shot call.
+   */
+  protected shouldRunInitQuery(): boolean {
+    return true;
+  }
+
+  /**
+   * Select which conversation turns to send to the model. Default: full history.
+   * Stateless CLI providers can return only the latest user turn.
+   */
+  protected selectHistoryForQuery(history: ConversationMessage[]): ConversationMessage[] {
+    return history;
+  }
 
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
@@ -93,24 +114,33 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
 
     const mode = ModeManager.getInstance().getActiveMode();
+
     const initPrompt = session.lastPromptNumber === 1
       ? buildInitPrompt(session.project, session.contentSessionId, session.userPrompt, mode)
       : buildContinuationPrompt(session.userPrompt, session.lastPromptNumber, session.contentSessionId, mode);
 
     session.conversationHistory.push({ role: 'user', content: initPrompt });
 
-    try {
-      session.lastPromptSentAt = Date.now();
-      session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
-      await this.handleInitResponse(initResponse, session, worker, model);
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+    if (this.shouldRunInitQuery()) {
+      try {
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'init';
+        const initResponse = await this.query(session.conversationHistory, config, session);
+        await this.handleInitResponse(initResponse, session, worker, model);
+      } catch (error: unknown) {
+        if (error instanceof Error) {
+          logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
+        } else {
+          logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+        }
+        return this.handleSessionError(error, session, worker);
       }
-      return this.handleSessionError(error, session, worker);
+    } else {
+      session.lastGeneratorSource = 'init';
+      logger.info('SDK', `${this.providerName} skipping init model call (stateless single-shot mode)`, {
+        sessionId: session.sessionDbId,
+        model,
+      });
     }
 
     try {
@@ -208,7 +238,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.query(
+      this.selectHistoryForQuery(session.conversationHistory),
+      config,
+      session,
+    );
 
     let tokensUsed = 0;
     if (obsResponse.content) {
@@ -257,7 +291,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
-    const summaryResponse = await this.query(session.conversationHistory, config);
+    const summaryResponse = await this.query(
+      this.selectHistoryForQuery(session.conversationHistory),
+      config,
+      session,
+    );
 
     let tokensUsed = 0;
     if (summaryResponse.content) {

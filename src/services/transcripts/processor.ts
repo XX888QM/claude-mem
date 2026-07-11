@@ -29,11 +29,19 @@ export class TranscriptEventProcessor {
     entry: unknown,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    cwdOverride?: string | null,
   ): Promise<void> {
     for (const event of schema.events) {
       if (!matchesRule(entry, event.match, schema)) continue;
-      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+      await this.handleEvent(
+        entry,
+        watch,
+        schema,
+        event,
+        sessionIdOverride ?? undefined,
+        cwdOverride ?? undefined,
+      );
     }
   }
 
@@ -106,7 +114,8 @@ export class TranscriptEventProcessor {
     watch: WatchTarget,
     schema: TranscriptSchema,
     event: SchemaEvent,
-    sessionIdOverride?: string
+    sessionIdOverride?: string,
+    cwdOverride?: string,
   ): Promise<void> {
     const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
     if (!sessionId) {
@@ -115,6 +124,9 @@ export class TranscriptEventProcessor {
     }
 
     const session = this.getOrCreateSession(watch, sessionId);
+    if (cwdOverride && !session.cwd) {
+      session.cwd = cwdOverride;
+    }
     const cwd = this.resolveCwd(entry, watch, schema, event, session);
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);

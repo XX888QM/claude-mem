@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, existsSync, rmSync } from 'fs';
 import {
   buildHardenedSdkOptions,
+  OBSERVER_CLAUDE_CONFIG_DIR,
   OBSERVER_DISALLOWED_TOOLS,
 } from '../../src/sdk/hardened-options.js';
 import {
@@ -73,6 +74,14 @@ describe('Observer/KnowledgeAgent SDK tool enforcement (hardened-options)', () =
       const opts = buildHardenedSdkOptions({ ...BASE_INPUT });
       expect(opts.cwd).toBe(OBSERVER_SESSIONS_DIR);
       expect(opts.cwd).not.toBe(process.cwd());
+    });
+
+    it('uses a private Claude config dir so observer transcripts are not default user sessions', () => {
+      const opts = buildHardenedSdkOptions({
+        ...BASE_INPUT,
+        env: { CLAUDE_CONFIG_DIR: '/Users/demo/.claude' },
+      });
+      expect(opts.env?.CLAUDE_CONFIG_DIR).toBe(OBSERVER_CLAUDE_CONFIG_DIR);
     });
 
     it('exposes a canUseTool callback', () => {

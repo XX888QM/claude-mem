@@ -84,6 +84,10 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_GEMINI_API_KEY',
       'CLAUDE_MEM_GEMINI_MODEL',
       'CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED',
+      'CLAUDE_MEM_CODEX_MODEL',
+      'CLAUDE_MEM_CODEX_REASONING_EFFORT',
+      'CLAUDE_MEM_GROK_MODEL',
+      'CLAUDE_MEM_GROK_REASONING_EFFORT',
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
@@ -134,9 +138,23 @@ export class SettingsRoutes extends BaseRouteHandler {
 
   private validateSettings(settings: any): { valid: boolean; error?: string } {
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter'];
-    if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", or "openrouter"' };
+      const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'grok'];
+      if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "grok"' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_CODEX_REASONING_EFFORT) {
+      const validCodexEfforts = ['low', 'medium', 'high', 'xhigh'];
+      if (!validCodexEfforts.includes(settings.CLAUDE_MEM_CODEX_REASONING_EFFORT)) {
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: low, medium, high, xhigh' };
+      }
+    }
+
+    if (settings.CLAUDE_MEM_GROK_REASONING_EFFORT) {
+      const validGrokEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+      if (!validGrokEfforts.includes(settings.CLAUDE_MEM_GROK_REASONING_EFFORT)) {
+        return { valid: false, error: 'CLAUDE_MEM_GROK_REASONING_EFFORT must be one of: none, minimal, low, medium, high, xhigh, max' };
       }
     }
 

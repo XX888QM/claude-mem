@@ -63,6 +63,22 @@ export class SessionMessageBuffer {
       seen.add(toolUseId);
     }
 
+    // Collapse unclaimed summarize jobs: many platforms fire summarize repeatedly
+    // at session end; keeping one latest message prevents summary storms.
+    if (message.type === 'summarize') {
+      const list = this.getList(sessionDbId);
+      const existing = list.find(m => !m.claimed && m.message.type === 'summarize');
+      if (existing) {
+        if (message.last_assistant_message) {
+          existing.message.last_assistant_message = message.last_assistant_message;
+        }
+        existing.enqueuedAt = Date.now();
+        this.onMutate?.();
+        this.signal(sessionDbId);
+        return 0;
+      }
+    }
+
     const id = this.nextId++;
     this.getList(sessionDbId).push({ id, message, claimed: false, enqueuedAt: Date.now() });
     this.onMutate?.();

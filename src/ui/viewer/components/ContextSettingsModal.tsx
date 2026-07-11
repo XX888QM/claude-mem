@@ -332,13 +332,15 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose between Claude (via Agent SDK) or Gemini (via REST API)"
+                tooltip="选择用于生成观察和会话总结的模型提供方"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
                   <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="codex">Codex</option>
+                  <option value="grok">Grok</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter (multi-model)</option>
                 </select>
@@ -358,6 +360,60 @@ export function ContextSettingsModal({
                     <option value="opus">opus (highest quality)</option>
                   </select>
                 </FormField>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <>
+                  <FormField label="Codex 模型">
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.6-luna'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                    >
+                      <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+                      <option value="gpt-5.5">GPT-5.5</option>
+                      <option value="gpt-5.4">GPT-5.4</option>
+                      <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                    </select>
+                  </FormField>
+                  <FormField label="思考模式">
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT || 'medium'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                      <option value="xhigh">超高</option>
+                    </select>
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'grok' && (
+                <>
+                  <FormField label="Grok 模型">
+                    <select
+                      value={formState.CLAUDE_MEM_GROK_MODEL || 'grok-4.5'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GROK_MODEL', e.target.value)}
+                    >
+                      <option value="grok-4.5">Grok 4.5</option>
+                    </select>
+                  </FormField>
+                  <FormField label="思考模式">
+                    <select
+                      value={formState.CLAUDE_MEM_GROK_REASONING_EFFORT || 'medium'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GROK_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="none">关</option>
+                      <option value="minimal">最低</option>
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                      <option value="xhigh">超高</option>
+                      <option value="max">最大</option>
+                    </select>
+                  </FormField>
+                </>
               )}
 
               {formState.CLAUDE_MEM_PROVIDER === 'gemini' && (
