@@ -96,6 +96,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     return history;
   }
 
+  /** Allow providers to apply summary-only model settings per batch. */
+  protected getSummaryConfig(config: TConfig): TConfig {
+    return config;
+  }
+
   async startSession(session: ActiveSession, worker?: WorkerRef): Promise<void> {
     const config = this.getConfig();
     const { apiKey, model } = config;
@@ -291,9 +296,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
+    const summaryConfig = this.getSummaryConfig(config);
     const summaryResponse = await this.query(
       this.selectHistoryForQuery(session.conversationHistory),
-      config,
+      summaryConfig,
       session,
     );
 
@@ -309,7 +315,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (summaryResponse.content || this.forwardEmptyMessageResponse) {
       await processAgentResponse(
         summaryResponse.content || '', session, this.dbManager, this.sessionManager,
-        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? config.model
+        worker, tokensUsed, originalTimestamp, this.providerName, lastCwd, summaryResponse.servedModel ?? summaryConfig.model
       );
     } else {
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {

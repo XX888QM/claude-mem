@@ -23,7 +23,7 @@ function expectObservation(raw: string) {
 beforeEach(() => {
   const modeManager = ModeManager.getInstance() as unknown as { activeMode: unknown };
   modeManager.activeMode = {
-    observation_types: [{ id: 'bugfix' }, { id: 'discovery' }, { id: 'refactor' }],
+    observation_types: [{ id: 'bugfix' }, { id: 'change' }, { id: 'discovery' }, { id: 'refactor' }],
     observation_concepts: [],
   };
 });
@@ -134,7 +134,7 @@ describe('parseAgentXml — observations', () => {
     expect(result.valid).toBe(false);
   });
 
-  it('uses first mode type as fallback when type is missing', () => {
+  it('uses change as fallback when type is missing', () => {
     const xml = `<observation>
       <title>Missing type field</title>
     </observation>`;
@@ -142,7 +142,16 @@ describe('parseAgentXml — observations', () => {
     const result = expectObservation(xml);
 
     expect(result).toHaveLength(1);
-    expect(result[0].type).toBe('bugfix');
+    expect(result[0].type).toBe('change');
+  });
+
+  it('uses change as fallback for an unsupported type', () => {
+    const result = expectObservation(`<observation>
+      <type>milestone</type>
+      <title>Reached the final verification step</title>
+    </observation>`);
+
+    expect(result[0].type).toBe('change');
   });
 
   it('returns a fail-fast result when no observation/summary blocks are present', () => {

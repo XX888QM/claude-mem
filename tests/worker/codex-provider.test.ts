@@ -18,6 +18,9 @@ const originalPath = process.env.PATH;
 
 afterEach(() => {
   process.env.PATH = originalPath;
+  delete process.env.CLAUDE_MEM_SUMMARY_PROVIDER;
+  delete process.env.CLAUDE_MEM_SUMMARY_MODEL;
+  delete process.env.CLAUDE_MEM_SUMMARY_EFFORT;
   resetCodexQuotaCooldownForTesting();
 });
 
@@ -85,6 +88,32 @@ describe('CodexProvider', () => {
 
     expect(defaults.CLAUDE_MEM_CODEX_MODEL).toBe('gpt-5.6-luna');
     expect(defaults.CLAUDE_MEM_CODEX_REASONING_EFFORT).toBe('medium');
+  });
+
+  it('uses summary-only model and effort without changing observation config', () => {
+    process.env.CLAUDE_MEM_SUMMARY_PROVIDER = 'codex';
+    process.env.CLAUDE_MEM_SUMMARY_MODEL = 'gpt-5.6-luna';
+    process.env.CLAUDE_MEM_SUMMARY_EFFORT = 'high';
+
+    class TestCodexProvider extends CodexProvider {
+      summaryConfig(config: { apiKey: string; model: string; reasoningEffort: string }) {
+        return this.getSummaryConfig(config);
+      }
+    }
+
+    const observationConfig = {
+      apiKey: 'codex-cli',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'low',
+    };
+    const provider = new TestCodexProvider({} as any, {} as any);
+
+    expect(provider.summaryConfig(observationConfig)).toEqual({
+      apiKey: 'codex-cli',
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'high',
+    });
+    expect(observationConfig.reasoningEffort).toBe('low');
   });
 
   it('skips the wasteful init call but keeps init protocol context for each task', () => {

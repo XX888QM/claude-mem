@@ -104,16 +104,16 @@ function parseObservationBlocks(text: string, correlationId?: string | number): 
 
     const mode = ModeManager.getInstance().getActiveMode();
     const validTypes = mode.observation_types.map(t => t.id);
-    const fallbackType = validTypes[0];
+    const fallbackType = validTypes.includes('change') ? 'change' : validTypes[0];
     let finalType = fallbackType;
     if (type) {
       if (validTypes.includes(type.trim())) {
         finalType = type.trim();
       } else {
-        logger.error('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
+        logger.warn('PARSER', `Invalid observation type: ${type}, using "${fallbackType}"`, { correlationId });
       }
     } else {
-      logger.error('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
+      logger.warn('PARSER', `Observation missing type field, using "${fallbackType}"`, { correlationId });
     }
 
     const cleanedConcepts = concepts.filter(c => c !== finalType);

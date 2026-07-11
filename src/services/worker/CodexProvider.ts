@@ -62,6 +62,17 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     };
   }
 
+  protected override getSummaryConfig(config: CodexConfig): CodexConfig {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    if (settings.CLAUDE_MEM_SUMMARY_PROVIDER !== 'codex') return config;
+
+    return {
+      ...config,
+      model: settings.CLAUDE_MEM_SUMMARY_MODEL || config.model,
+      reasoningEffort: normalizeReasoningEffort(settings.CLAUDE_MEM_SUMMARY_EFFORT),
+    };
+  }
+
   protected missingApiKeyError(): Error {
     return new Error('Codex CLI is not available. Install Codex and sign in before selecting the Codex provider.');
   }
