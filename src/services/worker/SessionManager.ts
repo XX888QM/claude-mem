@@ -264,6 +264,10 @@ export class SessionManager {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
     }
+    if (session.retainedWorkCleanupTimer) {
+      clearTimeout(session.retainedWorkCleanupTimer);
+      session.retainedWorkCleanupTimer = undefined;
+    }
 
     session.abortReason = 'shutdown';
     session.abortController.abort();
@@ -325,6 +329,10 @@ export class SessionManager {
     if (session.respawnTimer) {
       clearTimeout(session.respawnTimer);
       session.respawnTimer = undefined;
+    }
+    if (session.retainedWorkCleanupTimer) {
+      clearTimeout(session.retainedWorkCleanupTimer);
+      session.retainedWorkCleanupTimer = undefined;
     }
 
     this.buffer.dispose(sessionDbId);
