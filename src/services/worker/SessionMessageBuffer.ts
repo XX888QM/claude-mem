@@ -166,18 +166,31 @@ export class SessionMessageBuffer {
    * SDK subprocess is killed).
    */
   async *drain(options: DrainOptions): AsyncIterableIterator<PendingMessageWithId> {
+    for await (const batch of this.drainBatches(options, 1)) {
+      yield batch[0];
+    }
+  }
+
+  async *drainBatches(options: DrainOptions, maxBatchSize: number): AsyncIterableIterator<PendingMessageWithId[]> {
     const { sessionDbId, signal, onIdleTimeout, idleTimeoutMs = SESSION_IDLE_TIMEOUT_MS } = options;
+    const batchSize = Math.max(1, Math.floor(maxBatchSize));
     let lastActivityTime = Date.now();
 
     while (!signal.aborted) {
       const claimed = this.claimNext(sessionDbId);
       if (claimed) {
         lastActivityTime = Date.now();
-        yield {
-          ...claimed.message,
-          _persistentId: claimed.id,
-          _originalTimestamp: claimed.enqueuedAt
-        };
+        const claimedBatch = [claimed];
+        while (claimedBatch.length < batchSize) {
+          const next = this.claimNextCompatibleObservation(sessionDbId, claimed.message);
+          if (!next) break;
+          claimedBatch.push(next);
+        }
+        yield claimedBatch.map(item => ({
+          ...item.message,
+          _persistentId: item.id,
+          _originalTimestamp: item.enqueuedAt
+        }));
         continue;
       }
 
@@ -197,6 +210,22 @@ export class SessionMessageBuffer {
         lastActivityTime = Date.now();
       }
     }
+  }
+
+  private claimNextCompatibleObservation(sessionDbId: number, first: PendingMessage): BufferedMessage | null {
+    if (first.type !== 'observation') return null;
+    const list = this.buffers.get(sessionDbId);
+    const next = list?.find(message => !message.claimed);
+    if (!next || next.message.type !== 'observation') return null;
+    if (
+      next.message.prompt_number !== first.prompt_number ||
+      next.message.cwd !== first.cwd ||
+      next.message.agentId !== first.agentId ||
+      next.message.agentType !== first.agentType
+    ) return null;
+    next.claimed = true;
+    this.onMutate?.();
+    return next;
   }
 
   private claimNext(sessionDbId: number): BufferedMessage | null {

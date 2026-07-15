@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { buildObservationPrompt } from '../../src/sdk/prompts.js';
+import { buildObservationBatchPrompt, buildObservationPrompt } from '../../src/sdk/prompts.js';
 
 describe('buildObservationPrompt', () => {
   it('instructs the observer to avoid prose skip responses', () => {
@@ -16,6 +16,34 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or an empty response');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+  });
+});
+
+describe('buildObservationBatchPrompt', () => {
+  it('places multiple tool uses in one observer request with one instruction footer', () => {
+    const prompt = buildObservationBatchPrompt([
+      {
+        id: 1,
+        tool_name: 'Read',
+        tool_input: JSON.stringify({ file: 'a.ts' }),
+        tool_output: JSON.stringify({ content: 'A' }),
+        created_at_epoch: 1_700_000_000_000,
+        cwd: '/repo',
+      },
+      {
+        id: 2,
+        tool_name: 'Write',
+        tool_input: JSON.stringify({ file: 'b.ts' }),
+        tool_output: JSON.stringify({ ok: true }),
+        created_at_epoch: 1_700_000_001_000,
+        cwd: '/repo',
+      },
+    ]);
+
+    expect(prompt.match(/<observed_from_primary_session>/g)).toHaveLength(2);
+    expect(prompt.match(/Return either one or more <observation>/g)).toHaveLength(1);
+    expect(prompt.indexOf('<what_happened>Read</what_happened>'))
+      .toBeLessThan(prompt.indexOf('<what_happened>Write</what_happened>'));
   });
 });
 

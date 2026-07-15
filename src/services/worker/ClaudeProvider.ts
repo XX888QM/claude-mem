@@ -2,7 +2,7 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import { buildInitPrompt, buildObservationBatchPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, OBSERVER_SESSIONS_DIR, ensureDir, paths } from '../../shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth, getAuthMethodDescription } from '../../shared/EnvManager.js';
@@ -482,7 +482,8 @@ export class ClaudeProvider {
       isSynthetic: true
     };
 
-    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+    for await (const batch of this.sessionManager.getMessageBatchIterator(session.sessionDbId)) {
+      const message = batch[0];
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
@@ -495,14 +496,14 @@ export class ClaudeProvider {
           session.lastPromptNumber = message.prompt_number;
         }
 
-        const obsPrompt = buildObservationPrompt({
+        const obsPrompt = buildObservationBatchPrompt(batch.map(item => ({
           id: 0, // Not used in prompt
-          tool_name: message.tool_name!,
-          tool_input: JSON.stringify(message.tool_input),
-          tool_output: JSON.stringify(message.tool_response),
-          created_at_epoch: Date.now(),
-          cwd: message.cwd
-        });
+          tool_name: item.tool_name!,
+          tool_input: JSON.stringify(item.tool_input),
+          tool_output: JSON.stringify(item.tool_response),
+          created_at_epoch: item._originalTimestamp,
+          cwd: item.cwd
+        })));
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
