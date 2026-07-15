@@ -21,6 +21,20 @@ async function drainAll(buffer: SessionMessageBuffer, sessionDbId: number): Prom
   return collected;
 }
 
+async function drainAllBatches(buffer: SessionMessageBuffer, sessionDbId: number): Promise<PendingMessageWithId[][]> {
+  const controller = new AbortController();
+  const collected: PendingMessageWithId[][] = [];
+  for await (const batch of buffer.drainBatches({
+    sessionDbId,
+    signal: controller.signal,
+    idleTimeoutMs: 30,
+    onIdleTimeout: () => controller.abort(),
+  }, 5)) {
+    collected.push(batch);
+  }
+  return collected;
+}
+
 describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
   test('enqueue assigns increasing ids and reports depth', () => {
     const buffer = new SessionMessageBuffer();
@@ -49,6 +63,44 @@ describe('SessionMessageBuffer (in-RAM observation buffer)', () => {
     expect(drained.map(m => m.tool_name)).toEqual(['Read', 'Write']);
     expect(drained[0]._persistentId).toBeGreaterThan(0);
     expect(typeof drained[0]._originalTimestamp).toBe('number');
+  });
+
+  test('drainBatches groups at most five compatible observations in FIFO order', async () => {
+    const buffer = new SessionMessageBuffer();
+    for (let i = 1; i <= 7; i++) {
+      buffer.enqueue(1, {
+        ...obs(`Tool${i}`, `id-${i}`),
+        prompt_number: 3,
+        cwd: '/repo',
+        agentId: 'agent-1',
+        agentType: 'worker',
+      });
+    }
+
+    const batches = await drainAllBatches(buffer, 1);
+
+    expect(batches.map(batch => batch.map(message => message.tool_name))).toEqual([
+      ['Tool1', 'Tool2', 'Tool3', 'Tool4', 'Tool5'],
+      ['Tool6', 'Tool7'],
+    ]);
+  });
+
+  test('drainBatches stops before summaries or observations with different routing metadata', async () => {
+    const buffer = new SessionMessageBuffer();
+    buffer.enqueue(1, { ...obs('Read', 'a'), prompt_number: 1, cwd: '/repo', agentId: 'agent-1' });
+    buffer.enqueue(1, { ...obs('Write', 'b'), prompt_number: 1, cwd: '/repo', agentId: 'agent-1' });
+    buffer.enqueue(1, { type: 'summarize', last_assistant_message: 'done' });
+    buffer.enqueue(1, { ...obs('Edit', 'c'), prompt_number: 2, cwd: '/repo', agentId: 'agent-1' });
+    buffer.enqueue(1, { ...obs('Exec', 'd'), prompt_number: 2, cwd: '/other', agentId: 'agent-1' });
+
+    const batches = await drainAllBatches(buffer, 1);
+
+    expect(batches.map(batch => batch.map(message => message.tool_name ?? message.type))).toEqual([
+      ['Read', 'Write'],
+      ['summarize'],
+      ['Edit'],
+      ['Exec'],
+    ]);
   });
 
   test('confirm removes a message; resetClaimed makes claimed messages re-drainable', async () => {

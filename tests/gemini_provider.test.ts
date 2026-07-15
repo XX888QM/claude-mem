@@ -158,6 +158,7 @@ describe('GeminiProvider', () => {
     mockSessionManager = {
       getMessageIterator: async function* () { yield* []; },
       getClaimedMessages: mock(() => []),
+      getMessageBatchIterator: async function* () { yield* []; },
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
       getMessageBuffer: () => mockPendingMessageStore,
@@ -237,6 +238,57 @@ describe('GeminiProvider', () => {
     expect(body.contents[0].role).toBe('user');
     expect(body.contents[1].role).toBe('model');
     expect(body.contents[2].role).toBe('user');
+  });
+
+  it('sends one model request for a compatible observation batch', async () => {
+    (mockSessionManager as any).getMessageBatchIterator = async function* () {
+      yield [
+        {
+          type: 'observation',
+          tool_name: 'Read',
+          tool_input: { file: 'a.ts' },
+          tool_response: { content: 'A' },
+          prompt_number: 2,
+          cwd: '/repo',
+          _persistentId: 1,
+          _originalTimestamp: 1_700_000_000_000,
+        },
+        {
+          type: 'observation',
+          tool_name: 'Write',
+          tool_input: { file: 'b.ts' },
+          tool_response: { ok: true },
+          prompt_number: 2,
+          cwd: '/repo',
+          _persistentId: 2,
+          _originalTimestamp: 1_700_000_001_000,
+        },
+      ];
+    };
+
+    let calls = 0;
+    global.fetch = mock(() => {
+      calls += 1;
+      const text = calls === 1
+        ? '<observations/>'
+        : '<observation><type>discovery</type><title>Batched tools</title></observation>';
+      return Promise.resolve(new Response(JSON.stringify({
+        candidates: [{ content: { parts: [{ text }] } }],
+        usageMetadata: { totalTokenCount: 10 },
+      })));
+    });
+
+    await agent.startSession(makeSession({
+      lastPromptNumber: 2,
+      earliestPendingTimestamp: null,
+      claimedMessageIds: [1, 2],
+    }));
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const observationPrompt = JSON.parse((global.fetch as any).mock.calls[1][1].body)
+      .contents.at(-1).parts[0].text;
+    expect(observationPrompt).toContain('<what_happened>Read</what_happened>');
+    expect(observationPrompt).toContain('<what_happened>Write</what_happened>');
   });
 
   it('keeps Gemini roles alternating for full conversation history', async () => {
@@ -374,8 +426,8 @@ describe('GeminiProvider', () => {
 
   it('rolls back a failed observation prompt before buffered work is retried', async () => {
     const session = makeSession();
-    (mockSessionManager as any).getMessageIterator = async function* () {
-      yield {
+    (mockSessionManager as any).getMessageBatchIterator = async function* () {
+      yield [{
         type: 'observation',
         tool_name: 'Read',
         tool_input: { marker: 'FAILED_RETRY_MARKER' },
@@ -383,7 +435,7 @@ describe('GeminiProvider', () => {
         prompt_number: 1,
         _persistentId: 1,
         _originalTimestamp: Date.now(),
-      };
+      }];
     };
 
     let callCount = 0;

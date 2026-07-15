@@ -365,6 +365,12 @@ export class SessionManager {
   }
 
   async *getMessageIterator(sessionDbId: number): AsyncIterableIterator<PendingMessageWithId> {
+    for await (const batch of this.getMessageBatchIterator(sessionDbId, 1)) {
+      yield batch[0];
+    }
+  }
+
+  async *getMessageBatchIterator(sessionDbId: number, maxBatchSize = 5): AsyncIterableIterator<PendingMessageWithId[]> {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -373,7 +379,7 @@ export class SessionManager {
     // Re-yield anything a prior generator pass claimed but did not confirm.
     await this.resetProcessingToPending(sessionDbId);
 
-    for await (const message of this.buffer.drain({
+    for await (const batch of this.buffer.drainBatches({
       sessionDbId,
       signal: session.abortController.signal,
       onIdleTimeout: () => {
@@ -382,17 +388,19 @@ export class SessionManager {
         session.abortReason = 'idle';
         session.abortController.abort();
       }
-    })) {
-      session.claimedMessageIds.push(message._persistentId);
-      if (session.earliestPendingTimestamp === null) {
-        session.earliestPendingTimestamp = message._originalTimestamp;
-      } else {
-        session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, message._originalTimestamp);
+    }, maxBatchSize)) {
+      for (const message of batch) {
+        session.claimedMessageIds.push(message._persistentId);
+        if (session.earliestPendingTimestamp === null) {
+          session.earliestPendingTimestamp = message._originalTimestamp;
+        } else {
+          session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp, message._originalTimestamp);
+        }
       }
 
       session.lastGeneratorActivity = Date.now();
 
-      yield message;
+      yield batch;
     }
   }
 

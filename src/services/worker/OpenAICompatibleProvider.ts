@@ -3,8 +3,8 @@ import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
-import { buildInitPrompt, buildObservationPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import type { ActiveSession, ConversationMessage } from '../worker-types.js';
+import { buildInitPrompt, buildObservationBatchPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
+import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
@@ -193,7 +193,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
   ): Promise<void> {
     let lastCwd: string | undefined;
 
-    for await (const message of this.sessionManager.getMessageIterator(session.sessionDbId)) {
+    for await (const batch of this.sessionManager.getMessageBatchIterator(session.sessionDbId)) {
+      const message = batch[0];
       session.pendingAgentId = message.agentId ?? null;
       session.pendingAgentType = message.agentType ?? null;
 
@@ -205,7 +206,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
       try {
         if (message.type === 'observation') {
-          await this.processObservationMessage(session, message, worker, config, originalTimestamp, lastCwd);
+          await this.processObservationMessages(session, batch, worker, config, originalTimestamp, lastCwd);
         } else if (message.type === 'summarize') {
           await this.processSummaryMessage(session, message, worker, config, mode, originalTimestamp, lastCwd);
         }
@@ -240,14 +241,15 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     }
   }
 
-  private async processObservationMessage(
+  private async processObservationMessages(
     session: ActiveSession,
-    message: { prompt_number?: number; tool_name?: string; tool_input?: unknown; tool_response?: unknown; cwd?: string },
+    messages: PendingMessageWithId[],
     worker: WorkerRef | undefined,
     config: TConfig,
     originalTimestamp: number | null,
     lastCwd: string | undefined
   ): Promise<void> {
+    const message = messages[0];
     if (message.prompt_number !== undefined) {
       session.lastPromptNumber = message.prompt_number;
     }
@@ -256,14 +258,14 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
 
-    const obsPrompt = buildObservationPrompt({
+    const obsPrompt = buildObservationBatchPrompt(messages.map(item => ({
       id: 0,
-      tool_name: message.tool_name!,
-      tool_input: JSON.stringify(message.tool_input),
-      tool_output: JSON.stringify(message.tool_response),
-      created_at_epoch: originalTimestamp ?? Date.now(),
-      cwd: message.cwd
-    });
+      tool_name: item.tool_name!,
+      tool_input: JSON.stringify(item.tool_input),
+      tool_output: JSON.stringify(item.tool_response),
+      created_at_epoch: item._originalTimestamp,
+      cwd: item.cwd
+    })));
     const responseContext = snapshotResponseContext(session);
 
     session.conversationHistory.push({ role: 'user', content: obsPrompt });
