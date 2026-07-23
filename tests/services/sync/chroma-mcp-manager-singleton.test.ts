@@ -472,6 +472,104 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
   });
 
+  it('stop() waits for an active tool call before disposing the subprocess', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let finishCall: (() => void) | undefined;
+    callToolImpl = () => new Promise(resolve => {
+      finishCall = () => resolve({ content: [{ type: 'text', text: '{}' }] });
+    });
+
+    const pendingCall = mgr.callTool('chroma_add_documents', {});
+    await waitForCondition(() => finishCall !== undefined && transportInstances.length === 1);
+    const subprocessPid = transportInstances[0]._process.pid;
+
+    const stopPromise = mgr.stop();
+    await Promise.resolve();
+    expect(killTreeCalls).not.toContain(subprocessPid);
+
+    finishCall!();
+    await pendingCall;
+    await stopPromise;
+
+    expect(killTreeCalls).toContain(subprocessPid);
+  });
+
+  it('lets an accepted multi-call operation finish all calls before shutdown', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let releaseSecondCall: (() => void) | undefined;
+    let firstCallFinished = false;
+    let invocations = 0;
+    callToolImpl = async () => {
+      invocations += 1;
+      return { content: [{ type: 'text', text: '{}' }] };
+    };
+
+    const operation = mgr.runOperation(async (callTool) => {
+      await callTool('chroma_create_collection', {});
+      firstCallFinished = true;
+      await new Promise<void>(resolve => {
+        releaseSecondCall = resolve;
+      });
+      await callTool('chroma_add_documents', {});
+    });
+    await waitForCondition(() => firstCallFinished && releaseSecondCall !== undefined);
+    const subprocessPid = transportInstances[0]._process.pid;
+
+    const stopPromise = mgr.stop();
+    await Promise.resolve();
+    expect(killTreeCalls).not.toContain(subprocessPid);
+
+    releaseSecondCall!();
+    await operation;
+    await stopPromise;
+
+    expect(invocations).toBe(2);
+    expect(killTreeCalls).toContain(subprocessPid);
+  });
+
+  it('rejects new calls while an accepted operation is draining for shutdown', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let releaseOperation: (() => void) | undefined;
+
+    const operation = mgr.runOperation(async (callTool) => {
+      await callTool('chroma_create_collection', {});
+      await new Promise<void>(resolve => {
+        releaseOperation = resolve;
+      });
+      await callTool('chroma_add_documents', {});
+    });
+    await waitForCondition(() => releaseOperation !== undefined);
+
+    const stopPromise = mgr.stop();
+
+    await expect(
+      mgr.callTool('chroma_list_collections', { limit: 1 })
+    ).rejects.toThrow('connection cancelled during shutdown');
+
+    releaseOperation!();
+    await operation;
+    await stopPromise;
+  });
+
+  it('does not reconnect an active direct call after shutdown starts', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    let rejectCall: ((error: Error) => void) | undefined;
+    callToolImpl = () => new Promise((_resolve, reject) => {
+      rejectCall = reject;
+    });
+
+    const pendingCall = mgr.callTool('chroma_add_documents', {});
+    await waitForCondition(() => rejectCall !== undefined && transportInstances.length === 1);
+
+    const stopPromise = mgr.stop();
+    rejectCall!(new Error('Connection closed'));
+
+    await expect(pendingCall).rejects.toThrow('connection cancelled during shutdown');
+    await stopPromise;
+
+    expect(transportInstances.length).toBe(1);
+  });
+
   it('stop() during a hanging prewarm does not record uvx unavailable or apply reconnect backoff', async () => {
     process.env.CLAUDE_MEM_CHROMA_PREWARM_TIMEOUT_MS = '25';
     prewarmSpawnBehavior = 'timeout';

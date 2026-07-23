@@ -27,7 +27,7 @@ interface Harness {
 
 function makeHarness(overrides: {
   reason?: WorkerShutdownReason;
-  gracefulDeadlineMs?: number;
+  gracefulWarningMs?: number;
   beforeGracefulThrows?: boolean;
   graceful?: () => Promise<void>;
   portFree?: boolean;
@@ -61,7 +61,7 @@ function makeHarness(overrides: {
       calls.push('graceful');
       return overrides.graceful ? overrides.graceful() : Promise.resolve();
     },
-    gracefulDeadlineMs: overrides.gracefulDeadlineMs ?? 1000,
+    gracefulWarningMs: overrides.gracefulWarningMs ?? 1000,
     restartHandoff: {
       port: PORT,
       portFreeTimeoutMs: 1000,
@@ -135,19 +135,25 @@ describe('runShutdownSequence — pre-graceful bookkeeping guard', () => {
 });
 
 describe('runShutdownSequence — graceful-shutdown deadline', () => {
-  it('proceeds when performGracefulShutdown never resolves (hard deadline)', async () => {
+  it('warns at the deadline but waits for graceful cleanup before restart handoff', async () => {
+    let gracefulCompleted = false;
     const h = makeHarness({
       reason: 'restart',
-      gracefulDeadlineMs: 50,
-      graceful: () => new Promise<void>(() => { /* hangs forever — unbounded session drain */ }),
+      gracefulWarningMs: 10,
+      graceful: () => new Promise<void>(resolve => {
+        setTimeout(() => {
+          gracefulCompleted = true;
+          resolve();
+        }, 40);
+      }),
     });
 
     const start = Date.now();
     await runShutdownSequence(h.options);
     const elapsed = Date.now() - start;
 
-    // Deadlined and continued into the restart handoff anyway.
-    expect(elapsed).toBeLessThan(2000);
+    expect(gracefulCompleted).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(30);
     expect(h.counters.waitForPortFree).toBe(1);
     expect(h.counters.spawnDaemon).toBe(1);
   });

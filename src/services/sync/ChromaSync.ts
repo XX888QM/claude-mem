@@ -1,5 +1,5 @@
 
-import { ChromaMcpManager } from './ChromaMcpManager.js';
+import { ChromaMcpManager, type ChromaToolCall } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
@@ -116,13 +116,19 @@ export class ChromaSync {
 
   // Public: cmem-sdk requires Chroma at construction. Plan §3 line 192.
   public async ensureCollectionExists(): Promise<void> {
+    const chromaMcp = ChromaMcpManager.getInstance();
+    await this.ensureCollectionExistsWith((toolName, toolArguments) =>
+      chromaMcp.callTool(toolName, toolArguments)
+    );
+  }
+
+  private async ensureCollectionExistsWith(callTool: ChromaToolCall): Promise<void> {
     if (this.collectionCreated) {
       return;
     }
 
-    const chromaMcp = ChromaMcpManager.getInstance();
     try {
-      await chromaMcp.callTool('chroma_create_collection', {
+      await callTool('chroma_create_collection', {
         collection_name: this.collectionName
       });
     } catch (error) {
@@ -293,8 +299,18 @@ export class ChromaSync {
       return 0;
     }
 
+    const chromaMcp = ChromaMcpManager.getInstance();
+    return chromaMcp.runOperation((callTool) =>
+      this.addDocumentsWithinOperation(documents, callTool)
+    );
+  }
+
+  private async addDocumentsWithinOperation(
+    documents: ChromaDocument[],
+    callTool: ChromaToolCall
+  ): Promise<number> {
     try {
-      await this.ensureCollectionExists();
+      await this.ensureCollectionExistsWith(callTool);
     } catch (error) {
       if (error instanceof ChromaUnavailableError) {
         logger.warn('CHROMA_SYNC', 'Chroma unavailable before write; leaving documents unsynced', {
@@ -312,8 +328,6 @@ export class ChromaSync {
       throw error;
     }
 
-    const chromaMcp = ChromaMcpManager.getInstance();
-
     let written = 0;
     for (let i = 0; i < documents.length; i += this.BATCH_SIZE) {
       const batch = documents.slice(i, i + this.BATCH_SIZE);
@@ -325,7 +339,7 @@ export class ChromaSync {
       );
 
       try {
-        await chromaMcp.callTool('chroma_add_documents', {
+        await callTool('chroma_add_documents', {
           collection_name: this.collectionName,
           ids: batch.map(d => d.id),
           documents: batch.map(d => d.document),
@@ -351,7 +365,7 @@ export class ChromaSync {
             // still advancing the watermark past them (data loss). So split
             // the batch: update the existing IDs in place, add only the new
             // ones, and count each part only if it actually succeeds.
-            const existing = await chromaMcp.callTool('chroma_get_documents', {
+            const existing = await callTool('chroma_get_documents', {
               collection_name: this.collectionName,
               ids: batch.map(d => d.id),
               include: []
@@ -367,7 +381,7 @@ export class ChromaSync {
             );
 
             if (toUpdate.length > 0) {
-              await chromaMcp.callTool('chroma_update_documents', {
+              await callTool('chroma_update_documents', {
                 collection_name: this.collectionName,
                 ids: toUpdate.map(d => d.id),
                 documents: toUpdate.map(d => d.document),
@@ -377,7 +391,7 @@ export class ChromaSync {
             }
 
             if (toAdd.length > 0) {
-              await chromaMcp.callTool('chroma_add_documents', {
+              await callTool('chroma_add_documents', {
                 collection_name: this.collectionName,
                 ids: toAdd.map(d => d.id),
                 documents: toAdd.map(d => d.document),
@@ -1135,59 +1149,61 @@ export class ChromaSync {
   ): Promise<void> {
     if (targets.length === 0) return;
 
-    await this.ensureCollectionExists();
     const chromaMcp = ChromaMcpManager.getInstance();
+    await chromaMcp.runOperation(async (callTool) => {
+      await this.ensureCollectionExistsWith(callTool);
 
-    let totalPatched = 0;
+      let totalPatched = 0;
 
-    for (const docType of ['observation', 'session_summary'] as const) {
-      const sqliteIds = targets
-        .filter(target => target.docType === docType)
-        .map(target => target.sqliteId);
+      for (const docType of ['observation', 'session_summary'] as const) {
+        const sqliteIds = targets
+          .filter(target => target.docType === docType)
+          .map(target => target.sqliteId);
 
-      for (let i = 0; i < sqliteIds.length; i += this.BATCH_SIZE) {
-        const idBatch = sqliteIds.slice(i, i + this.BATCH_SIZE);
+        for (let i = 0; i < sqliteIds.length; i += this.BATCH_SIZE) {
+          const idBatch = sqliteIds.slice(i, i + this.BATCH_SIZE);
 
-        const existing = await chromaMcp.callTool('chroma_get_documents', {
-          collection_name: this.collectionName,
-          where: {
-            $and: [
-              { doc_type: docType },
-              { sqlite_id: { $in: idBatch } }
-            ]
-          },
-          include: ['metadatas']
-        }) as { ids?: string[]; metadatas?: Array<Record<string, any> | null> };
+          const existing = await callTool('chroma_get_documents', {
+            collection_name: this.collectionName,
+            where: {
+              $and: [
+                { doc_type: docType },
+                { sqlite_id: { $in: idBatch } }
+              ]
+            },
+            include: ['metadatas']
+          }) as { ids?: string[]; metadatas?: Array<Record<string, any> | null> };
 
-        const docIds: string[] = existing?.ids ?? [];
-        if (docIds.length === 0) continue;
+          const docIds: string[] = existing?.ids ?? [];
+          if (docIds.length === 0) continue;
 
-        const metadatas = (existing?.metadatas ?? []).map(m => {
-          const merged: Record<string, any> = {
-            ...(m ?? {}),
-            merged_into_project: mergedIntoProject
-          };
-          return Object.fromEntries(
-            Object.entries(merged).filter(
-              ([, v]) => v !== null && v !== undefined && v !== ''
-            )
-          );
-        });
+          const metadatas = (existing?.metadatas ?? []).map(m => {
+            const merged: Record<string, any> = {
+              ...(m ?? {}),
+              merged_into_project: mergedIntoProject
+            };
+            return Object.fromEntries(
+              Object.entries(merged).filter(
+                ([, v]) => v !== null && v !== undefined && v !== ''
+              )
+            );
+          });
 
-        await chromaMcp.callTool('chroma_update_documents', {
-          collection_name: this.collectionName,
-          ids: docIds,
-          metadatas
-        });
-        totalPatched += docIds.length;
+          await callTool('chroma_update_documents', {
+            collection_name: this.collectionName,
+            ids: docIds,
+            metadatas
+          });
+          totalPatched += docIds.length;
+        }
       }
-    }
 
-    logger.info('CHROMA_SYNC', 'merged_into_project metadata patched', {
-      collection: this.collectionName,
-      mergedIntoProject,
-      sqliteIdCount: targets.length,
-      chromaDocsPatched: totalPatched
+      logger.info('CHROMA_SYNC', 'merged_into_project metadata patched', {
+        collection: this.collectionName,
+        mergedIntoProject,
+        sqliteIdCount: targets.length,
+        chromaDocsPatched: totalPatched
+      });
     });
   }
 }

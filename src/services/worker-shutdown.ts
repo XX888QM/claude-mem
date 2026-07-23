@@ -1,6 +1,6 @@
 /**
- * Guarded worker shutdown sequence: the dying worker drains gracefully under
- * a hard deadline and, on restart, spawns its own successor so no other
+ * Guarded worker shutdown sequence: the dying worker drains gracefully and,
+ * on restart, spawns its own successor so no other
  * process races it for the port
  * (plans/2026-06-10-worker-restart-single-source-of-truth.md).
  *
@@ -16,8 +16,9 @@
  *   1. Re-entrancy guard — /api/admin/restart, /api/admin/shutdown and the
  *      signal handler can all race into shutdown; only the first wins.
  *   2. Pre-shutdown bookkeeping (watcher/heartbeat/sentinel/telemetry).
- *   3. performGracefulShutdown under a hard deadline — it has no global
- *      deadline of its own and session drain has been observed at 35-40s.
+ *   3. performGracefulShutdown with a slow-shutdown warning threshold. The
+ *      same cleanup promise is still awaited after the warning so teardown
+ *      cannot race active persistence work or orphan managed subprocesses.
  *   4. reason === 'restart' ONLY: spawn the successor worker as the dying
  *      worker's final act, AFTER the port is confirmed free. 'stop' and
  *      signal shutdowns stay kill-only.
@@ -57,7 +58,8 @@ export interface ShutdownSequenceOptions {
   /** Pre-graceful bookkeeping: transcript watcher, heartbeat, sentinel, telemetry flush. */
   beforeGracefulShutdown: () => Promise<void>;
   performGracefulShutdown: () => Promise<void>;
-  gracefulDeadlineMs: number;
+  /** Log threshold only; cleanup continues until the bounded component work settles. */
+  gracefulWarningMs: number;
   restartHandoff: RestartHandoffDeps;
 }
 
@@ -85,37 +87,39 @@ export async function runShutdownSequence(options: ShutdownSequenceOptions): Pro
     );
   }
 
-  // Hard deadline around performGracefulShutdown: on expiry (or failure) log
-  // and continue — a restart must never hang the dying worker on an unbounded
-  // session drain.
+  // Warn when graceful shutdown is slow, but keep awaiting the SAME cleanup
+  // promise. Continuing into restart handoff while this promise is still
+  // draining sessions lets teardown race final Chroma writes and can orphan
+  // the old subprocess tree when flushResponseThen exits the worker.
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<'deadline'>((resolve) => {
-    deadlineTimer = setTimeout(() => resolve('deadline'), options.gracefulDeadlineMs);
+    deadlineTimer = setTimeout(() => resolve('deadline'), options.gracefulWarningMs);
     deadlineTimer.unref?.();
   });
   try {
+    const gracefulShutdown = options.performGracefulShutdown().then(
+      () => 'graceful' as const,
+      (error: unknown) => {
+        // A failed graceful shutdown must not abort the restart handoff.
+        logger.error(
+          'SYSTEM',
+          'Graceful shutdown failed — proceeding',
+          { reason: options.reason },
+          error instanceof Error ? error : new Error(String(error))
+        );
+        return 'graceful-error' as const;
+      }
+    );
     const outcome = await Promise.race([
-      options.performGracefulShutdown().then(
-        () => 'graceful' as const,
-        (error: unknown) => {
-          // A failed graceful shutdown must not abort the restart handoff;
-          // proceed exactly like the deadline path.
-          logger.error(
-            'SYSTEM',
-            'Graceful shutdown failed — proceeding',
-            { reason: options.reason },
-            error instanceof Error ? error : new Error(String(error))
-          );
-          return 'graceful-error' as const;
-        }
-      ),
+      gracefulShutdown,
       deadline,
     ]);
     if (outcome === 'deadline') {
-      logger.warn('SYSTEM', 'Graceful shutdown deadline exceeded — proceeding', {
-        deadlineMs: options.gracefulDeadlineMs,
+      logger.warn('SYSTEM', 'Graceful shutdown is taking longer than expected — waiting for cleanup', {
+        warningMs: options.gracefulWarningMs,
         reason: options.reason,
       });
+      await gracefulShutdown;
     }
   } finally {
     if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
