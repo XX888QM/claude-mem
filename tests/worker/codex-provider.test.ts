@@ -83,6 +83,17 @@ describe('CodexProvider', () => {
     expect(args).toContain('model_reasoning_effort="medium"');
   });
 
+  it('passes none through to disable observer reasoning', () => {
+    const args = buildCodexExecArgs(
+      DEFAULT_CODEX_MODEL,
+      '/tmp/codex-output.txt',
+      '/tmp/codex-work',
+      'none',
+    );
+
+    expect(args).toContain('model_reasoning_effort="none"');
+  });
+
   it('keeps the Codex model separate from the Claude model setting', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
 

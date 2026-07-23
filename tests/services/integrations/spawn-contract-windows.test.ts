@@ -113,9 +113,39 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     expect('shell' in comInvocation.options).toBe(false);
   });
 
-  it('uses bare codex on non-Windows platforms', () => {
-    expect(resolveCodexCommand('linux')).toBe('codex');
-    expect(resolveCodexCommand('darwin')).toBe('codex');
+  it('uses an absolute discovered Codex path on non-Windows platforms', () => {
+    expect(resolveCodexCommand('linux', () => null, () => '/usr/local/bin/codex'))
+      .toBe('/usr/local/bin/codex');
+    expect(resolveCodexCommand('darwin', () => null, () => '/opt/homebrew/bin/codex'))
+      .toBe('/opt/homebrew/bin/codex');
+  });
+
+  it('falls back to bare codex on non-Windows platforms when discovery is unavailable', () => {
+    expect(resolveCodexCommand('linux', () => null, () => null)).toBe('codex');
+    expect(resolveCodexCommand('darwin', () => null, () => null)).toBe('codex');
+  });
+
+  it('discovers codex outside a thin daemon PATH via known install locations', () => {
+    // If this machine has ~/.npm-global/bin/codex, a PATH that omits that dir
+    // should still resolve to an absolute path (not bare "codex").
+    const npmGlobalCodex = `${process.env.HOME}/.npm-global/bin/codex`;
+    const { existsSync } = require('fs') as typeof import('fs');
+    if (!existsSync(npmGlobalCodex)) return;
+    const previousPath = process.env.PATH;
+    const previousCodexPath = process.env.CODEX_PATH;
+    const previousClaudeMemCodexPath = process.env.CLAUDE_MEM_CODEX_PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    delete process.env.CODEX_PATH;
+    delete process.env.CLAUDE_MEM_CODEX_PATH;
+    try {
+      expect(resolveCodexCommand('darwin')).toBe(npmGlobalCodex);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousCodexPath === undefined) delete process.env.CODEX_PATH;
+      else process.env.CODEX_PATH = previousCodexPath;
+      if (previousClaudeMemCodexPath === undefined) delete process.env.CLAUDE_MEM_CODEX_PATH;
+      else process.env.CLAUDE_MEM_CODEX_PATH = previousClaudeMemCodexPath;
+    }
   });
 
   it('codexSpawn is exported and invokable (no crash on a bogus codex)', () => {

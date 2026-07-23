@@ -400,7 +400,7 @@ function killChildTree(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-/** Strip model noise and keep the first observer XML root when present. */
+/** Strip model noise and keep valid observer XML roots when present. */
 export function sanitizeGrokOutput(raw: string): string {
   let text = raw
     .replace(/<\|eos\|>/g, '')
@@ -409,8 +409,11 @@ export function sanitizeGrokOutput(raw: string): string {
 
   if (!text) return '';
 
-  const block = /<(observation|summary)\b[\s\S]*?<\/\1>/i.exec(text);
-  if (block) return block[0].trim();
+  const observations = Array.from(text.matchAll(/<observation\b[\s\S]*?<\/observation>/gi), match => match[0].trim());
+  if (observations.length > 0) return observations.join('\n');
+
+  const summary = /<summary\b[\s\S]*?<\/summary>/i.exec(text);
+  if (summary) return summary[0].trim();
 
   const skip = /<skip_summary\b[^>]*\/>/i.exec(text);
   if (skip) return skip[0].trim();
@@ -465,10 +468,8 @@ export function normalizeGrokObserverXml(raw: string): string {
     }
   }
 
-  const obsMatch = /<observation>([\s\S]*?)<\/observation>/i.exec(text);
-  if (obsMatch) {
-    return `<observation>${obsMatch[1]}</observation>`;
-  }
+  const observations = Array.from(text.matchAll(/<observation\b[\s\S]*?<\/observation>/gi), match => match[0].trim());
+  if (observations.length > 0) return observations.join('\n');
 
   return text;
 }

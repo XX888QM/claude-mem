@@ -156,15 +156,16 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_CODEX_REASONING_EFFORT) {
-      const validCodexEfforts = ['low', 'medium', 'high', 'xhigh'];
+      const validCodexEfforts = ['none', 'low', 'medium', 'high', 'xhigh'];
       if (!validCodexEfforts.includes(settings.CLAUDE_MEM_CODEX_REASONING_EFFORT)) {
-        return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: low, medium, high, xhigh' };
+        return { valid: false, error: 'CLAUDE_MEM_CODEX_REASONING_EFFORT must be one of: none, low, medium, high, xhigh' };
       }
     }
 
     if (settings.CLAUDE_MEM_SUMMARY_PROVIDER) {
-      if (settings.CLAUDE_MEM_SUMMARY_PROVIDER !== 'codex') {
-        return { valid: false, error: 'CLAUDE_MEM_SUMMARY_PROVIDER currently supports only "codex"' };
+      const validSummaryProviders = ['codex', 'grok'];
+      if (!validSummaryProviders.includes(settings.CLAUDE_MEM_SUMMARY_PROVIDER)) {
+        return { valid: false, error: 'CLAUDE_MEM_SUMMARY_PROVIDER must be "codex" or "grok"' };
       }
     }
 

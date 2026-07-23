@@ -110,11 +110,41 @@ function lookupCodexOnWindows(): string | null {
     ?? null;
 }
 
+function lookupCodexOnPosix(): string | null {
+  // Explicit override first (mirrors GROK_PATH for daemon installs).
+  for (const envKey of ['CODEX_PATH', 'CLAUDE_MEM_CODEX_PATH']) {
+    const override = process.env[envKey]?.trim();
+    if (override && existsSync(override)) return override;
+  }
+
+  // PATH walk (may be thin for launchd/daemon workers).
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, 'codex');
+    if (existsSync(candidate)) return candidate;
+  }
+
+  // Known install locations that often sit outside the daemon PATH.
+  // npm-global is the common local install on this machine; local/homebrew
+  // cover standard CLI installs.
+  for (const candidate of [
+    path.join(homedir(), '.npm-global', 'bin', 'codex'),
+    path.join(homedir(), '.local', 'bin', 'codex'),
+    '/opt/homebrew/bin/codex',
+    '/usr/local/bin/codex',
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return null;
+}
+
 export function resolveCodexCommand(
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
+  posixLookup: () => string | null = lookupCodexOnPosix,
 ): string {
-  if (platform !== 'win32') return 'codex';
+  if (platform !== 'win32') return posixLookup() ?? 'codex';
   return windowsLookup() ?? 'codex.cmd';
 }
 
@@ -122,8 +152,9 @@ export function resolveCodexSpawnInvocation(
   args: string[],
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
+  posixLookup: () => string | null = lookupCodexOnPosix,
 ): SpawnSyncInvocation {
-  const resolvedCommand = resolveCodexCommand(platform, windowsLookup);
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup, posixLookup);
   return buildSpawnSyncInvocation(resolvedCommand, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],

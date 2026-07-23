@@ -22,11 +22,11 @@ interface CodexConfig {
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_CODEX_REASONING_EFFORT = 'medium';
 
-const CODEX_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+const CODEX_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh']);
 const MAX_CONTEXT_MESSAGES = 12;
 const MAX_ESTIMATED_TOKENS = 60_000;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-const CODEX_EXEC_TIMEOUT_MS = 120_000;
+const CODEX_EXEC_TIMEOUT_MS = 240_000;
 const CODEX_QUOTA_RETRY_COOLDOWN_MS = 5 * 60_000;
 const DEFAULT_MAX_CONCURRENT_CODEX = 2;
 

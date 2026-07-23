@@ -93,9 +93,22 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
     }));
 
     const provider = new TestProvider({} as any, {
-      getMessageIterator: async function* () {
-        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
-        yield { type: 'summarize', last_assistant_message: 'done' };
+      getMessageBatchIterator: async function* () {
+        yield [{
+          type: 'observation',
+          tool_name: 'Read',
+          tool_input: {},
+          tool_response: {},
+          prompt_number: 2,
+          _persistentId: 1,
+          _originalTimestamp: 1_700_000_000_000,
+        }];
+        yield [{
+          type: 'summarize',
+          last_assistant_message: 'done',
+          _persistentId: 2,
+          _originalTimestamp: 1_700_000_001_000,
+        }];
       },
     } as any);
 
@@ -112,8 +125,13 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
     }));
 
     const provider = new TestProvider({} as any, {
-      getMessageIterator: async function* () {
-        yield { type: 'summarize', last_assistant_message: 'done' };
+      getMessageBatchIterator: async function* () {
+        yield [{
+          type: 'summarize',
+          last_assistant_message: 'done',
+          _persistentId: 1,
+          _originalTimestamp: 1_700_000_000_000,
+        }];
       },
     } as any);
 

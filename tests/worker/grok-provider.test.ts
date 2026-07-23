@@ -82,6 +82,12 @@ describe('GrokProvider', () => {
       .toBe('<observation><title>t</title></observation>');
   });
 
+  it('keeps every observation in a batched Grok response', () => {
+    const raw = '<observation><title>one</title></observation><observation><title>two</title></observation>';
+    expect(sanitizeGrokOutput(raw)).toBe(raw.replace('</observation><observation>', '</observation>\n<observation>'));
+    expect(normalizeGrokObserverXml(raw)).toBe(raw.replace('</observation><observation>', '</observation>\n<observation>'));
+  });
+
   it('salvages observation-shaped summary into protocol summary fields', () => {
     const raw = `<summary>
   <type>discovery</type>
