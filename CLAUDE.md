@@ -8,6 +8,19 @@ Claude-mem is a Claude Code plugin providing persistent memory across sessions. 
 npm run build-and-sync        # Build, sync to marketplace, restart worker
 ```
 
+## Repository Ownership and Official Updates
+
+- This checkout has one configured Git remote: `origin` → `https://github.com/XX888QM/claude-mem.git`.
+- Do not add the official repository as a persistent remote and never push to it. The official source is kept only as a reference URL: `https://github.com/thedotmack/claude-mem.git`.
+- When the official project updates, fetch it temporarily, review the diff, and bring over only the useful, compatible changes. Do not blindly merge the whole official branch because this fork carries Codex, Grok, queue, and project-attribution customizations.
+
+```bash
+git fetch https://github.com/thedotmack/claude-mem.git main
+git log --oneline HEAD..FETCH_HEAD
+git diff --stat HEAD...FETCH_HEAD
+# Cherry-pick a suitable complete official commit, or port only the reviewed files.
+```
+
 ## Local Runtime Overrides
 
 - Observer SDK subprocesses use `~/.claude-mem/observer-claude-config` as their private `CLAUDE_CONFIG_DIR` so internal sessions do not appear in CC Switch.
