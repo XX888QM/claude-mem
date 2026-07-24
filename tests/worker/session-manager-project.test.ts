@@ -138,6 +138,29 @@ describe('SessionManager prompt project attribution', () => {
     expect(dbManager.getSessionById(1).project).toBe('repo-a');
   });
 
+  it('uses the observation project instead of a stale durable project', async () => {
+    const sessionManager = new SessionManager(makeDbManager());
+    sessionManager.initializeSession(1, 'prompt 1', 1);
+
+    await sessionManager.queueObservation(1, {
+      tool_name: 'Read',
+      tool_input: '{}',
+      tool_response: '{}',
+      prompt_number: 1,
+    }, 'repo-b/worktree');
+
+    expect(sessionManager.getSession(1)?.project).toBe('repo-b/worktree');
+  });
+
+  it('uses the summary project instead of a stale durable project', async () => {
+    const sessionManager = new SessionManager(makeDbManager());
+    sessionManager.initializeSession(1, 'prompt 1', 1);
+
+    await sessionManager.queueSummarize(1, 'done', 'repo-b/worktree');
+
+    expect(sessionManager.getSession(1)?.project).toBe('repo-b/worktree');
+  });
+
   it('keeps the same non-placeholder project across prompt continuation', () => {
     const sessionManager = new SessionManager(makeDbManager(undefined, 'repo-b/worktree'));
     const firstPrompt = sessionManager.initializeSession(1, 'prompt 1', 1);

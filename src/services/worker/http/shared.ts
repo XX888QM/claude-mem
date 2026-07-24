@@ -133,7 +133,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
-  });
+  }, project || undefined);
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');
   eventBroadcaster.broadcastObservationQueued(sessionDbId);

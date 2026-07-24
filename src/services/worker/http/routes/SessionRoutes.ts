@@ -356,6 +356,7 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     last_assistant_message: z.string().optional(),
     agentId: z.string().optional(),
+    project: z.string().optional(),
     platformSource: z.string().optional(),
   }).passthrough();
 
@@ -399,7 +400,7 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId } = req.body;
+    const { contentSessionId, last_assistant_message, agentId, project } = req.body;
     const platformSource = this.getPlatformSourceFromRequest(req);
 
     if (agentId) {
@@ -427,7 +428,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const cleanedLastAssistantMessage = last_assistant_message
       ? stripMemoryTags(String(last_assistant_message))
       : last_assistant_message;
-    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, project);
 
     await this.ensureGeneratorRunning(sessionDbId, 'summarize');
 

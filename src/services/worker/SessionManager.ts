@@ -158,10 +158,10 @@ export class SessionManager {
     return this.sessions.get(sessionDbId);
   }
 
-  async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
+  async queueObservation(sessionDbId: number, data: ObservationData, currentProject?: string): Promise<void> {
     let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
+    if (!session || (currentProject && currentProject !== 'unknown')) {
+      session = this.initializeSession(sessionDbId, undefined, data.prompt_number, currentProject);
     }
 
     const message: PendingMessage = {
@@ -190,10 +190,14 @@ export class SessionManager {
     }
   }
 
-  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
+  async queueSummarize(
+    sessionDbId: number,
+    lastAssistantMessage?: string,
+    currentProject?: string,
+  ): Promise<void> {
     let session = this.sessions.get(sessionDbId);
-    if (!session) {
-      session = this.initializeSession(sessionDbId);
+    if (!session || (currentProject && currentProject !== 'unknown')) {
+      session = this.initializeSession(sessionDbId, undefined, undefined, currentProject);
     }
 
     const message: PendingMessage = {

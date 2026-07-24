@@ -336,6 +336,7 @@ export class TranscriptEventProcessor {
     const requestBody = JSON.stringify({
       contentSessionId: session.sessionId,
       last_assistant_message: lastAssistantMessage,
+      project: session.project,
       platformSource: session.platformSource
     });
 
