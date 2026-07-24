@@ -9,10 +9,15 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH, DATA_DIR } from '../../shared/paths.js';
+import {
+  DATA_DIR,
+  ensureDir,
+  OBSERVER_SESSIONS_DIR,
+  USER_SETTINGS_PATH,
+} from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
@@ -184,7 +189,8 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
       )),
     ].join('\n');
 
-    const workDir = mkdtempSync(join(tmpdir(), 'claude-mem-grok-'));
+    ensureDir(OBSERVER_SESSIONS_DIR);
+    const workDir = mkdtempSync(join(OBSERVER_SESSIONS_DIR, 'grok-'));
     const promptPath = join(workDir, 'prompt.txt');
     writeFileSync(promptPath, prompt, 'utf-8');
     const args = buildGrokExecArgs(

@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { ensureDir, OBSERVER_SESSIONS_DIR, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
@@ -106,7 +105,8 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       )),
     ].join('\n');
 
-    const workDir = mkdtempSync(join(tmpdir(), 'claude-mem-codex-'));
+    ensureDir(OBSERVER_SESSIONS_DIR);
+    const workDir = mkdtempSync(join(OBSERVER_SESSIONS_DIR, 'codex-'));
     const outputPath = join(workDir, 'last-message.txt');
     const args = buildCodexExecArgs(
       config.model,
