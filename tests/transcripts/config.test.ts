@@ -28,6 +28,12 @@ describe('transcript watcher config', () => {
       path: join(homedir(), '.codex', 'sessions', '**', '*.jsonl'),
       schema: CODEX_SAMPLE_SCHEMA,
     })).toBe(true);
+
+    expect(isNativeHookBackedCodexWatch({
+      name: 'codex-archived',
+      path: '~/.codex/archived_sessions/**/*.jsonl',
+      schema: 'codex',
+    })).toBe(true);
   });
 
   it('does not treat custom transcript watches as native Codex hooks', () => {
@@ -98,7 +104,7 @@ describe('transcript watcher config', () => {
     })).toBe(false);
   });
 
-  it('strips legacy Codex watches unless explicitly opted in', () => {
+  it('strips active and archived Codex watches unless explicitly opted in', () => {
     const config: TranscriptWatchConfig = {
       version: 1,
       schemas: {
@@ -112,20 +118,32 @@ describe('transcript watcher config', () => {
           startAtEnd: true,
         },
         {
+          name: 'codex-archived',
+          path: '~/.codex/archived_sessions/**/*.jsonl',
+          schema: 'codex',
+          startAtEnd: true,
+        },
+        {
           name: 'custom',
           path: '~/custom/**/*.jsonl',
           schema: 'codex',
+          startAtEnd: true,
+        },
+        {
+          name: 'grok',
+          path: '~/.grok/sessions/**/updates.jsonl',
+          schema: 'grok',
           startAtEnd: true,
         },
       ],
     };
 
     const filtered = filterNativeHookBackedCodexWatches(config, false);
-    expect(filtered.removed).toBe(1);
-    expect(filtered.config.watches.map(watch => watch.name)).toEqual(['custom']);
+    expect(filtered.removed).toBe(2);
+    expect(filtered.config.watches.map(watch => watch.name)).toEqual(['custom', 'grok']);
 
     const allowed = filterNativeHookBackedCodexWatches(config, true);
     expect(allowed.removed).toBe(0);
-    expect(allowed.config.watches).toHaveLength(2);
+    expect(allowed.config.watches).toHaveLength(4);
   });
 });

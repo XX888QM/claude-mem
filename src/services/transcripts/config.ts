@@ -20,8 +20,9 @@ export function isNativeHookBackedCodexWatch(watch: { name?: string; path?: stri
   if (!nameOrSchemaIsCodex || !watch.path) return false;
 
   const normalizedPath = expandHomePath(watch.path).replace(/\\/g, '/');
-  const codexSessionsRoot = join(homedir(), '.codex', 'sessions').replace(/\\/g, '/');
-  return normalizedPath === `${codexSessionsRoot}/**/*.jsonl`;
+  const codexRoots = ['sessions', 'archived_sessions']
+    .map(directory => join(homedir(), '.codex', directory).replace(/\\/g, '/'));
+  return codexRoots.some(root => normalizedPath === `${root}/**/*.jsonl`);
 }
 
 export function shouldSuppressNativeCodexAgentsContext(watch: {
