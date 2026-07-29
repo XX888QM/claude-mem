@@ -1,5 +1,5 @@
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
@@ -11,6 +11,35 @@ export enum LogLevel {
   WARN = 2,
   ERROR = 3,
   SILENT = 4
+}
+
+const RUNTIME_LOG_FILE = /^claude-mem-(\d{4}-\d{2}-\d{2})\.log$/;
+const RUNTIME_LOG_RETENTION_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function pruneOldRuntimeLogs(
+  logsDir: string,
+  now = Date.now(),
+  retentionDays = RUNTIME_LOG_RETENTION_DAYS,
+): number {
+  if (!existsSync(logsDir)) return 0;
+  const cutoff = new Date(now - retentionDays * DAY_MS).toISOString().slice(0, 10);
+  let removed = 0;
+  try {
+    for (const name of readdirSync(logsDir)) {
+      const match = RUNTIME_LOG_FILE.exec(name);
+      if (!match || match[1] >= cutoff) continue;
+      try {
+        unlinkSync(join(logsDir, name));
+        removed += 1;
+      } catch {
+        // Retention is best-effort and must never interrupt logging.
+      }
+    }
+  } catch {
+    return removed;
+  }
+  return removed;
 }
 
 export type Component =
@@ -80,6 +109,7 @@ class Logger {
   private useColor: boolean;
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
+  private logFileDate: string | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -87,8 +117,8 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
-    if (this.logFileInitialized) return;
-    this.logFileInitialized = true;
+    const date = new Date().toISOString().split('T')[0];
+    if (this.logFileInitialized && this.logFileDate === date) return;
 
     try {
       const logsDir = paths.logsDir();
@@ -97,11 +127,15 @@ class Logger {
         mkdirSync(logsDir, { recursive: true });
       }
 
-      const date = new Date().toISOString().split('T')[0];
+      pruneOldRuntimeLogs(logsDir);
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      this.logFileInitialized = true;
+      this.logFileDate = date;
     } catch (error: unknown) {
       console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
       this.logFilePath = null;
+      this.logFileInitialized = true;
+      this.logFileDate = date;
     }
   }
 

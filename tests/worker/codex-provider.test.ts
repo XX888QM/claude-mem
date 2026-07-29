@@ -10,6 +10,7 @@ import {
   buildCodexExecArgs,
   isCodexQuotaCooldownActive,
   normalizeCodexObserverOutput,
+  parseCodexCliUsage,
   resetCodexQuotaCooldownForTesting,
 } from '../../src/services/worker/CodexProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -62,6 +63,7 @@ describe('CodexProvider', () => {
       '-c', 'model_reasoning_effort="medium"',
       'exec',
       '--ephemeral',
+      '--json',
       '--sandbox', 'read-only',
       '--skip-git-repo-check',
       '--color', 'never',
@@ -149,6 +151,24 @@ describe('CodexProvider', () => {
     expect(normalizeCodexObserverOutput('<observations>\n</observations>')).toBe('');
     expect(normalizeCodexObserverOutput('<observation><type>change</type></observation>'))
       .toContain('<observation>');
+  });
+
+  it('accepts real Codex JSON usage without double-counting cached or reasoning tokens', () => {
+    expect(parseCodexCliUsage({
+      input_tokens: 22_738,
+      cached_input_tokens: 6_912,
+      cache_write_input_tokens: 0,
+      output_tokens: 46,
+      reasoning_output_tokens: 39,
+    })).toEqual({
+      inputTokens: 22_738,
+      cachedInputTokens: 6_912,
+      cacheWriteInputTokens: 0,
+      outputTokens: 46,
+      reasoningOutputTokens: 39,
+    });
+    expect(parseCodexCliUsage({ input_tokens: 1, cached_input_tokens: 2, output_tokens: 1 }))
+      .toBeNull();
   });
 
   it('honors CLAUDE_MEM_MAX_CONCURRENT_AGENTS for Codex execs', async () => {

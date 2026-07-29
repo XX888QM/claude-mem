@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -11,6 +12,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { recordCodexUsage, type CodexCliUsage } from '../../utils/codex-usage-meter.js';
 
 interface CodexConfig {
   apiKey: string;
@@ -28,6 +30,7 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
 const CODEX_EXEC_TIMEOUT_MS = 240_000;
 const CODEX_QUOTA_RETRY_COOLDOWN_MS = 5 * 60_000;
 const DEFAULT_MAX_CONCURRENT_CODEX = 2;
+const MAX_CODEX_JSON_LINE_BYTES = 1024 * 1024;
 
 let codexQuotaBlockedUntil = 0;
 let activeCodexExecs = 0;
@@ -81,7 +84,13 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   }
 
   protected buildLastUsage(_result: ProviderQueryResult): ActiveSession['lastUsage'] {
-    return null;
+    if (
+      typeof _result.inputTokens !== 'number'
+      || typeof _result.outputTokens !== 'number'
+    ) {
+      return null;
+    }
+    return { input: _result.inputTokens, output: _result.outputTokens };
   }
 
   protected async query(
@@ -122,8 +131,35 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         turns: truncated.length,
       });
       try {
-        await runCodexExec(args, prompt, session?.abortController.signal);
+        const execResult = await runCodexExec(args, prompt, session?.abortController.signal);
         codexQuotaBlockedUntil = 0;
+        if (execResult.usage) {
+          const recorded = recordCodexUsage({
+            eventId: execResult.threadId ?? randomUUID(),
+            model: config.model,
+            project: session?.project ?? 'unknown',
+            sessionId: session?.contentSessionId ?? '',
+            usage: execResult.usage,
+          });
+          if (!recorded) {
+            logger.warn('SDK', 'Codex usage meter could not persist this completed call');
+          }
+        } else {
+          logger.warn('SDK', 'Codex completed without a machine-readable usage event');
+        }
+
+        const content = existsSync(outputPath)
+          ? readFileSync(outputPath, 'utf-8').trim()
+          : '';
+        return {
+          content: normalizeCodexObserverOutput(content),
+          tokensUsed: execResult.usage
+            ? execResult.usage.inputTokens + execResult.usage.outputTokens
+            : undefined,
+          inputTokens: execResult.usage?.inputTokens,
+          outputTokens: execResult.usage?.outputTokens,
+          servedModel: config.model,
+        };
       } catch (error) {
         if (
           session
@@ -137,10 +173,6 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         }
         throw error;
       }
-      const content = existsSync(outputPath)
-        ? readFileSync(outputPath, 'utf-8').trim()
-        : '';
-      return { content: normalizeCodexObserverOutput(content), servedModel: config.model };
     } finally {
       rmSync(workDir, { recursive: true, force: true });
       releaseSlot();
@@ -283,7 +315,12 @@ function classifyCodexExecError(code: number | null, stderr: string): Error {
   return cause;
 }
 
-function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Promise<void> {
+interface CodexExecResult {
+  threadId: string | null;
+  usage: CodexCliUsage | null;
+}
+
+function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Promise<CodexExecResult> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError('Codex exec aborted before start'));
   }
@@ -291,7 +328,7 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
   return new Promise((resolve, reject) => {
     const invocation = resolveCodexSpawnInvocation(args);
     const child = spawn(invocation.command, invocation.args, {
-      stdio: ['pipe', 'ignore', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...sanitizeEnv(process.env),
         CLAUDE_MEM_SUPPRESS_HOOKS: '1',
@@ -301,6 +338,7 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
     });
 
     let stderr = '';
+    const jsonl = new CodexJsonlCollector();
     let settled = false;
     let terminationError: Error | null = null;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -316,7 +354,7 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
       settled = true;
       cleanup();
       if (error) reject(error);
-      else resolve();
+      else resolve(jsonl.result());
     };
 
     const terminate = (error: Error) => {
@@ -338,6 +376,9 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
       stderr += String(chunk);
       if (stderr.length > 4_000) stderr = stderr.slice(-4_000);
     });
+    child.stdout?.on('data', (chunk) => {
+      jsonl.write(String(chunk));
+    });
     child.on('error', (error) => {
       settle(error instanceof Error ? error : new Error(String(error)));
     });
@@ -357,6 +398,79 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
     });
     child.stdin?.end(stdin);
   });
+}
+
+class CodexJsonlCollector {
+  private buffer = '';
+  private threadId: string | null = null;
+  private usage: CodexCliUsage | null = null;
+
+  write(chunk: string): void {
+    this.buffer += chunk;
+    let newline = this.buffer.indexOf('\n');
+    while (newline >= 0) {
+      this.consume(this.buffer.slice(0, newline));
+      this.buffer = this.buffer.slice(newline + 1);
+      newline = this.buffer.indexOf('\n');
+    }
+    if (this.buffer.length > MAX_CODEX_JSON_LINE_BYTES) {
+      this.buffer = '';
+    }
+  }
+
+  result(): CodexExecResult {
+    if (this.buffer) this.consume(this.buffer);
+    return { threadId: this.threadId, usage: this.usage };
+  }
+
+  private consume(line: string): void {
+    if (!line || line.length > MAX_CODEX_JSON_LINE_BYTES) return;
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+        this.threadId = event.thread_id;
+      }
+      if (event.type === 'turn.completed') {
+        const usage = parseCodexCliUsage(event.usage);
+        if (usage) this.usage = usage;
+      }
+    } catch {
+      // Codex --json may emit non-event text on future versions; ignore it.
+    }
+  }
+}
+
+export function parseCodexCliUsage(value: unknown): CodexCliUsage | null {
+  if (!value || typeof value !== 'object') return null;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = nonNegativeInteger(usage.input_tokens);
+  const outputTokens = nonNegativeInteger(usage.output_tokens);
+  const cachedInputTokens = nonNegativeInteger(usage.cached_input_tokens, 0);
+  const cacheWriteInputTokens = nonNegativeInteger(usage.cache_write_input_tokens, 0);
+  const reasoningOutputTokens = nonNegativeInteger(usage.reasoning_output_tokens, 0);
+  if (
+    inputTokens === null
+    || outputTokens === null
+    || cachedInputTokens === null
+    || cacheWriteInputTokens === null
+    || reasoningOutputTokens === null
+    || cachedInputTokens > inputTokens
+    || reasoningOutputTokens > outputTokens
+  ) {
+    return null;
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+  };
+}
+
+function nonNegativeInteger(value: unknown, fallback?: number): number | null {
+  if (value === undefined && fallback !== undefined) return fallback;
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null;
 }
 
 export function isCodexSelected(): boolean {
@@ -388,6 +502,7 @@ export function buildCodexExecArgs(
     '-c', `model_reasoning_effort="${normalizedEffort}"`,
     'exec',
     '--ephemeral',
+    '--json',
     '--sandbox', 'read-only',
     '--skip-git-repo-check',
     '--color', 'never',

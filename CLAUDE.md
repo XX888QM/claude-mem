@@ -38,6 +38,8 @@ git diff --stat HEAD...FETCH_HEAD
 - **Installed Plugin**: `~/.claude/plugins/marketplaces/thedotmack/`
 - **Database**: `~/.claude-mem/claude-mem.db`
 - **Chroma**: `~/.claude-mem/chroma/`
+- **Codex 用量原始记录**: `~/.claude-mem/usage/codex-usage-YYYY-MM-DD.jsonl`（仅模型、项目、会话 ID 和真实 token 数；保留 90 天）
+- **运行日志**: `~/.claude-mem/logs/claude-mem-YYYY-MM-DD.log`（按日切换，自动保留 14 天）
 
 ## Requirements
 
