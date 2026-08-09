@@ -99,6 +99,7 @@ export class ChromaSync {
   private project: string;
   private collectionName: string;
   private collectionCreated = false;
+  private collectionCreation: Promise<void> | null = null;
   private readonly BATCH_SIZE = 100;
 
   constructor(project: string) {
@@ -127,6 +128,17 @@ export class ChromaSync {
       return;
     }
 
+    // Official 13.13+: coalesce concurrent create_collection storms, while still
+    // using the provided callTool so runOperation-scoped writes stay coherent.
+    if (!this.collectionCreation) {
+      this.collectionCreation = this.createCollectionWith(callTool).finally(() => {
+        this.collectionCreation = null;
+      });
+    }
+    await this.collectionCreation;
+  }
+
+  private async createCollectionWith(callTool: ChromaToolCall): Promise<void> {
     try {
       await callTool('chroma_create_collection', {
         collection_name: this.collectionName
