@@ -37,14 +37,13 @@ export const DEFAULT_GROK_MODEL = 'grok-4.5';
 export const DEFAULT_GROK_REASONING_EFFORT = 'medium';
 export const OBSERVER_GROK_HOME = join(DATA_DIR, 'observer-grok-home');
 
+// Grok CLI accepts only these three; anything else exits 1 with
+// "--effort/--reasoning-effort: unknown effort level '<x>'", which kills every
+// observation call. Normalize unsupported values instead of passing them through.
 const GROK_REASONING_EFFORTS = new Set([
-  'none',
-  'minimal',
   'low',
   'medium',
   'high',
-  'xhigh',
-  'max',
 ]);
 const MAX_CONTEXT_MESSAGES = 1; // Grok CLI is single-shot; only latest task
 const MAX_ESTIMATED_TOKENS = 8_000; // ~keep prompt small enough for headless reliability

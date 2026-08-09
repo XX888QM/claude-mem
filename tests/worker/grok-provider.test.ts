@@ -126,6 +126,18 @@ describe('GrokProvider', () => {
     expect(args[args.indexOf('--reasoning-effort') + 1]).toBe('medium');
   });
 
+  it('normalizes effort levels the Grok CLI rejects (none/minimal/xhigh/max)', () => {
+    // Grok CLI exits 1 on these: "unknown effort level '<x>'".
+    for (const rejected of ['none', 'minimal', 'xhigh', 'max']) {
+      const args = buildGrokExecArgs(DEFAULT_GROK_MODEL, '/tmp/prompt.txt', '/tmp/grok-work', rejected);
+      expect(args[args.indexOf('--reasoning-effort') + 1]).toBe('medium');
+    }
+    for (const accepted of ['low', 'medium', 'high']) {
+      const args = buildGrokExecArgs(DEFAULT_GROK_MODEL, '/tmp/prompt.txt', '/tmp/grok-work', accepted);
+      expect(args[args.indexOf('--reasoning-effort') + 1]).toBe(accepted);
+    }
+  });
+
   it('keeps the Grok model separate from the Claude model setting', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_GROK_MODEL).toBe('grok-4.5');
