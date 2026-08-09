@@ -118,7 +118,14 @@ function candidateBlock(options: ShellTemplateOptions): string {
     lines.push(`printf '%s\\n' ${quoted};`);
   }
 
-  const extraCacheRoots = isMcp && options.mcpExtraCacheRoots ? options.mcpExtraCacheRoots : [];
+  const extraCacheRoots = options.host === 'codex-cli'
+    ? [
+        '$HOME/.codex/plugins/cache/claude-mem-local/claude-mem',
+        '$HOME/.codex/plugins/cache/thedotmack/claude-mem',
+      ]
+    : isMcp && options.mcpExtraCacheRoots
+      ? options.mcpExtraCacheRoots
+      : [];
   const allGlobs = [...extraCacheRoots, '$_C/plugins/cache/thedotmack/claude-mem']
     .map((root) => `"${root}"/[0-9]*/`)
     .join(' ');
@@ -264,12 +271,14 @@ export function buildCodexWindowsCommand(
     "const roots=[];",
     "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
     "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
+    "const codexCaches=[p.join(h,'.codex','plugins','cache','claude-mem-local','claude-mem'),p.join(h,'.codex','plugins','cache','thedotmack','claude-mem')];",
     // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
     // the filter skips .orphaned_at-stamped cache dirs, same as
     // cacheWorkerScriptCandidates — every resolver ranking candidates
     // identically (by version, never mtime) is the restart-storm invariant.
     "const S=n=>{const q=n.split('-')[0].split('.');return[parseInt(q[0],10)||0,parseInt(q[1],10)||0,parseInt(q[2],10)||0]};",
     "const W=(a,b)=>{const x=S(a),y=S(b);return(y[0]-x[0])||(y[1]-x[1])||(y[2]-x[2])||((a.indexOf('-')<0?0:1)-(b.indexOf('-')<0?0:1))||(a<b?1:a>b?-1:0)};",
+    "for(const root of codexCaches){try{roots.push(...fs.readdirSync(root).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(root,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}}",
     "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",

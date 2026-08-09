@@ -117,6 +117,11 @@ function lookupCodexOnPosix(): string | null {
     if (override && existsSync(override)) return override;
   }
 
+  // A partial npm install can leave an executable shim on PATH while its
+  // platform binary is missing. Prefer the known-good Desktop CLI on macOS.
+  const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  if (process.platform === 'darwin' && existsSync(desktopCodex)) return desktopCodex;
+
   // PATH walk (may be thin for launchd/daemon workers).
   for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
     if (!directory) continue;
@@ -125,8 +130,6 @@ function lookupCodexOnPosix(): string | null {
   }
 
   // Known install locations that often sit outside the daemon PATH.
-  // npm-global is the common local install on this machine; local/homebrew
-  // cover standard CLI installs.
   for (const candidate of [
     path.join(homedir(), '.npm-global', 'bin', 'codex'),
     path.join(homedir(), '.local', 'bin', 'codex'),
