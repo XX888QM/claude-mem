@@ -163,3 +163,18 @@ describe("OpenCode search client response-shape contract", () => {
     expect(rendered).toContain("No observations found");
   });
 });
+
+describe("OpenCode bundle entry", () => {
+  it("exports only callable values (OpenCode rejects non-function exports)", async () => {
+    // OpenCode's loader walks Object.values(module) and throws
+    // TypeError("Plugin export is not a function") on the first non-callable,
+    // which disables the whole plugin. index.ts also exports const arrays, so
+    // the bundle must be built from entry.ts.
+    const entry = await import("../../src/integrations/opencode-plugin/entry.js");
+    const values = Object.values(entry);
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) {
+      expect(typeof value).toBe("function");
+    }
+  });
+});
