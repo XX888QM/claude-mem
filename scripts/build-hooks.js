@@ -673,7 +673,7 @@ async function buildHooks() {
         minify: true,
         logLevel: 'error',
         external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
+          'fs', 'fs/promises', 'path', 'node:path', 'os', 'child_process', 'url',
           'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
         ],
       });

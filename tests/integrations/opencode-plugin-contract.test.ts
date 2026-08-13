@@ -178,3 +178,46 @@ describe("OpenCode bundle entry", () => {
     }
   });
 });
+
+describe("OpenCode session naming and prompt capture", () => {
+  function makeCtx(overrides: Record<string, unknown> = {}) {
+    return {
+      client: {},
+      project: { id: "global", worktree: "/" },
+      directory: "/private/tmp/my-project",
+      worktree: "/",
+      serverUrl: new URL("http://127.0.0.1:1"),
+      $: {},
+      ...overrides,
+    } as any;
+  }
+
+  it("names the project after the working directory, not OpenCode itself", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { logs.push(args.join(" ")); };
+    try {
+      // ctx.worktree is "/" outside a git repo and ctx.project carries no name,
+      // so the directory basename is the only usable project name.
+      await ClaudeMemPlugin(makeCtx());
+    } finally {
+      console.log = originalLog;
+    }
+    expect(logs.join("\n")).toContain("project: my-project");
+  });
+
+  it("registers a chat.message hook that handles user turns", async () => {
+    const hooks = await ClaudeMemPlugin(makeCtx()) as Record<string, unknown>;
+    const chatMessage = hooks["chat.message"];
+    expect(typeof chatMessage).toBe("function");
+    // A user turn must not throw and must not be treated as an assistant
+    // observation; the prompt text is what the viewer shows instead of the
+    // "[media prompt]" placeholder.
+    await expect(
+      (chatMessage as (i: unknown, o: unknown) => Promise<void>)(
+        {},
+        { message: { role: "user", sessionID: "ses_test" }, parts: [{ type: "text", text: "hello" }] },
+      ),
+    ).resolves.toBeUndefined();
+  });
+});

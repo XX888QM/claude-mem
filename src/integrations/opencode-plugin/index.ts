@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { z } from "zod";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 
@@ -69,13 +70,18 @@ interface ToolExecuteAfterOutput {
   args?: Record<string, unknown>;
 }
 
+interface ChatMessagePart {
+  type: string;
+  text?: string;
+}
+
 interface ChatMessageOutput {
   message: {
     id?: string;
     role?: string;
     sessionID?: string;
   };
-  parts: Array<{ type: string; text?: string }>;
+  parts: ChatMessagePart[];
 }
 
 interface SessionCompactingInput {
@@ -167,17 +173,35 @@ function getOrCreateContentSessionId(openCodeSessionId: string): string {
  * the session the first time we see any activity for it (tool run or chat
  * message). This guarantees a session row exists before observations arrive.
  */
-function ensureSessionInitialized(openCodeSessionId: string, projectName: string): string {
+function ensureSessionInitialized(
+  openCodeSessionId: string,
+  projectName: string,
+  prompt = "",
+): string {
   const contentSessionId = getOrCreateContentSessionId(openCodeSessionId);
-  if (!initializedSessionIds.has(openCodeSessionId)) {
+  // A non-empty prompt is a real user turn and must always be posted: the
+  // worker stores one user_prompts row per init call, and an empty prompt is
+  // recorded as the "[media prompt]" placeholder. Activity with no prompt
+  // (tool run, assistant reply) only needs the one-time session bootstrap.
+  if (prompt || !initializedSessionIds.has(openCodeSessionId)) {
     initializedSessionIds.add(openCodeSessionId);
     workerPostFireAndForget("/api/sessions/init", {
       contentSessionId,
       project: projectName,
-      prompt: "",
+      prompt,
+      platformSource: "opencode",
     });
   }
   return contentSessionId;
+}
+
+/** Concatenated text of a chat message's text parts, or "" when it carries none. */
+function messageText(parts: ChatMessagePart[] | undefined): string {
+  return (parts || [])
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("\n")
+    .trim();
 }
 
 function truncate(text: string): string {
@@ -187,7 +211,16 @@ function truncate(text: string): string {
 }
 
 export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
-  const projectName = ctx.project?.name || "opencode";
+  // ctx.project carries no usable name (it is {id: "global"|<id>, worktree, …}),
+  // so every session used to be filed under the "opencode" fallback. ctx.directory
+  // is the real cwd; ctx.worktree is "/" for anything outside a git repo, whose
+  // basename is empty — hence directory first, matching how the other platforms
+  // name a project after its working directory.
+  const projectName =
+    basename(ctx.directory || "") ||
+    basename(ctx.worktree || "") ||
+    ctx.project?.name ||
+    "opencode";
 
   console.log(`[claude-mem] OpenCode plugin loading (project: ${projectName})`);
 
@@ -205,31 +238,42 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
         tool_input: output.args || {},
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
+        platformSource: "opencode",
       });
     },
 
-    // Capture assistant chat messages as observations.
+    // Capture chat messages: user turns become prompts, assistant turns become
+    // observations. Without the user branch every session was initialized with
+    // an empty prompt and stored as the "[media prompt]" placeholder, so the
+    // viewer showed no question text for OpenCode sessions.
     "chat.message": async (
       _input: Record<string, unknown>,
       output: ChatMessageOutput,
     ): Promise<void> => {
       const sessionID = output.message?.sessionID;
       if (!sessionID) return;
-      if (output.message?.role !== "assistant") return;
+
+      const role = output.message?.role;
+      if (role !== "assistant" && role !== "user") return;
+
+      const text = messageText(output.parts);
+
+      if (role === "user") {
+        if (!text) return;
+        ensureSessionInitialized(sessionID, projectName, truncate(text));
+        return;
+      }
 
       const contentSessionId = ensureSessionInitialized(sessionID, projectName);
-      const messageText = (output.parts || [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text as string)
-        .join("\n");
-      if (!messageText) return;
+      if (!text) return;
 
       workerPostFireAndForget("/api/sessions/observations", {
         contentSessionId,
         tool_name: "assistant_message",
         tool_input: {},
-        tool_response: truncate(messageText),
+        tool_response: truncate(text),
         cwd: ctx.directory,
+        platformSource: "opencode",
       });
     },
 
@@ -242,6 +286,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       workerPostFireAndForget("/api/sessions/summarize", {
         contentSessionId,
         last_assistant_message: "",
+        platformSource: "opencode",
       });
     },
 
@@ -259,6 +304,7 @@ export const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
           workerPostFireAndForget("/api/sessions/summarize", {
             contentSessionId,
             last_assistant_message: "",
+            platformSource: "opencode",
           });
           break;
         }
