@@ -125,12 +125,10 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     expect(resolveCodexCommand('darwin', () => null, () => null)).toBe('codex');
   });
 
-  it('discovers codex outside a thin daemon PATH, preferring Codex Desktop', () => {
-    // A partial npm install can leave its shim executable but unusable. When
-    // present, the native Codex Desktop binary wins; otherwise npm remains a
-    // valid absolute-path fallback.
+  it('discovers codex outside a thin daemon PATH before the Desktop fallback', () => {
+    // Daemon/sandbox contexts can reject the app-bundled binary with ENOENT
+    // even when it exists. Prefer the regular CLI when it is installed.
     const npmGlobalCodex = `${process.env.HOME}/.npm-global/bin/codex`;
-    const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
     const { existsSync } = require('fs') as typeof import('fs');
     if (!existsSync(npmGlobalCodex)) return;
     const previousPath = process.env.PATH;
@@ -140,9 +138,7 @@ describe('Windows #2695 - codex spawn resolves the .cmd shim without a shell', (
     delete process.env.CODEX_PATH;
     delete process.env.CLAUDE_MEM_CODEX_PATH;
     try {
-      expect(resolveCodexCommand('darwin')).toBe(
-        existsSync(desktopCodex) ? desktopCodex : npmGlobalCodex,
-      );
+      expect(resolveCodexCommand('darwin')).toBe(npmGlobalCodex);
     } finally {
       process.env.PATH = previousPath;
       if (previousCodexPath === undefined) delete process.env.CODEX_PATH;

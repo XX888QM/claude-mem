@@ -117,11 +117,6 @@ function lookupCodexOnPosix(): string | null {
     if (override && existsSync(override)) return override;
   }
 
-  // A partial npm install can leave an executable shim on PATH while its
-  // platform binary is missing. Prefer the known-good Desktop CLI on macOS.
-  const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
-  if (process.platform === 'darwin' && existsSync(desktopCodex)) return desktopCodex;
-
   // PATH walk (may be thin for launchd/daemon workers).
   for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
     if (!directory) continue;
@@ -138,6 +133,13 @@ function lookupCodexOnPosix(): string | null {
   ]) {
     if (existsSync(candidate)) return candidate;
   }
+
+  // The ChatGPT.app binary is a valid last-resort fallback, but some
+  // sandboxed/daemon launch contexts cannot spawn app-bundled executables
+  // even when the file exists. Prefer a PATH/npm CLI first so observation
+  // subprocesses do not fail with a misleading ENOENT.
+  const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
+  if (process.platform === 'darwin' && existsSync(desktopCodex)) return desktopCodex;
 
   return null;
 }
