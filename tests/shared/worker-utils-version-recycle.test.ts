@@ -1,14 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
-import { mkdtempSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realSupervisor from '../../src/supervisor/index.js';
 import * as realSpawn from '../../src/shared/spawn.js';
+import * as realKillProcessTree from '../../src/shared/kill-process-tree.js';
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
+const realKillProcessTreeSnapshot = { ...realKillProcessTree };
 
 // On version mismatch the hook must NOT delegate the recycle to the running
 // worker (the old design POSTed /api/admin/restart and the dying worker
@@ -20,6 +22,7 @@ const realSpawnSnapshot = { ...realSpawn };
 const PLUGIN_VERSION = '13.4.0';
 const STALE_VERSION = '13.3.0';
 const STALE_PID = 4242;
+const RUNTIME_PLUGIN_VERSION = (JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version: string }).version;
 
 // Record every HTTP call so we can assert no /api/admin/restart is issued.
 const fetchLog: Array<{ url: string; method: string }> = [];
@@ -38,9 +41,15 @@ let ownedPidInfo: { pid: number; port: number; startedAt: string } | null = null
 // the port until it is killed; the successor serves it after spawnHidden.
 let staleWorkerAlive = true;
 let successorUp = false;
+let readinessFailuresBeforeSuccess = 0;
+let readinessCalls = 0;
 
 // Records every spawn attempt (the lazy-spawn seam, spawnHidden in spawn.ts).
 const spawnCalls: Array<{ command: string; args: string[] }> = [];
+const killTreeCalls: Array<{
+  pid: number;
+  options: { signalMode?: 'graceful' | 'immediate'; signal?: AbortSignal } | undefined;
+}> = [];
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve(versionMatchResult),
@@ -54,8 +63,17 @@ mock.module('../../src/supervisor/index.js', () => ({
 mock.module('../../src/shared/spawn.js', () => ({
   spawnHidden: (command: string, args: string[]) => {
     spawnCalls.push({ command, args });
-    successorUp = true;
+    // A successor started while the stale worker still owns the port cannot
+    // become ready; only the post-recycle launch can bind it.
+    if (!staleWorkerAlive) successorUp = true;
     return { pid: 5151, unref: () => {} };
+  },
+}));
+
+mock.module('../../src/shared/kill-process-tree.js', () => ({
+  killProcessTree: async (pid: number, options?: { signalMode?: 'graceful' | 'immediate'; signal?: AbortSignal }) => {
+    killTreeCalls.push({ pid, options });
+    staleWorkerAlive = false;
   },
 }));
 
@@ -74,6 +92,7 @@ function okResponse(body: Record<string, unknown>): Promise<Response> {
 
 function installFetchMock(): void {
   fetchLog.length = 0;
+  readinessCalls = 0;
   global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
     const u = typeof url === 'string' ? url : url.toString();
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -83,9 +102,15 @@ function installFetchMock(): void {
     if (!portServed) {
       return Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1'));
     }
+    if (u.includes('/api/readiness')) {
+      readinessCalls += 1;
+      if (readinessCalls <= readinessFailuresBeforeSuccess) {
+        return Promise.resolve({ ok: false } as Response);
+      }
+    }
     if (u.includes('/api/health')) {
       return okResponse({
-        version: staleWorkerAlive ? versionMatchResult.workerVersion : versionMatchResult.pluginVersion,
+        version: staleWorkerAlive ? versionMatchResult.workerVersion : RUNTIME_PLUGIN_VERSION,
       });
     }
     return okResponse({});
@@ -96,10 +121,6 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
   const originalFetch = global.fetch;
   const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
   let tempDataDir: string;
-  let killSpy: ReturnType<typeof spyOn>;
-  let killCalls: Array<{ pid: number; signal: string | number | undefined }>;
-  let killError: NodeJS.ErrnoException | null;
-
   beforeEach(() => {
     // The lazy-spawn goes through the spawn gate (worker-spawn-gate.ts),
     // which writes <DATA_DIR>/spawn.lock — point DATA_DIR at a temp dir so
@@ -110,19 +131,12 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     spawnCalls.length = 0;
     staleWorkerAlive = true;
     successorUp = false;
+    readinessFailuresBeforeSuccess = 0;
     ownedPidInfo = null;
-    killCalls = [];
-    killError = null;
-    killSpy = spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
-      killCalls.push({ pid, signal });
-      staleWorkerAlive = false;
-      if (killError !== null) throw killError;
-      return true;
-    }) as typeof process.kill);
+    killTreeCalls.length = 0;
   });
 
   afterEach(() => {
-    killSpy.mockRestore();
     global.fetch = originalFetch;
     if (originalDataDir === undefined) {
       delete process.env.CLAUDE_MEM_DATA_DIR;
@@ -137,6 +151,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
     mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
+    mock.module('../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
   });
 
   it('SIGKILLs the stale worker and lazy-spawns the resolved script — never POSTs /api/admin/restart', async () => {
@@ -147,11 +162,54 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(true);
-    expect(killCalls).toEqual([{ pid: STALE_PID, signal: 'SIGKILL' }]);
+    expect(killTreeCalls).toHaveLength(1);
+    expect(killTreeCalls[0].pid).toBe(STALE_PID);
+    expect(killTreeCalls[0].options?.signalMode).toBe('immediate');
     expect(spawnCalls.length).toBe(1);
     expect(spawnCalls[0].args).toContain('--daemon');
     const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
     expect(restartCalls.length).toBe(0);
+  });
+
+  it('recycles a stale ready worker before a bounded Codex hook request', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+    const result = await workerUtils.executeWithWorkerFallback(
+      '/api/test',
+      'GET',
+      undefined,
+      { workerStartupTimeoutMs: 2_000, timeoutMs: 2_000 },
+    );
+
+    expect(killTreeCalls).toHaveLength(1);
+    expect(killTreeCalls[0].pid).toBe(STALE_PID);
+    expect(killTreeCalls[0].options?.signalMode).toBe('immediate');
+    expect(killTreeCalls[0].options?.signal).toBeInstanceOf(AbortSignal);
+    expect(spawnCalls).toHaveLength(1);
+    expect(fetchLog.some(call => call.url.includes('/api/admin/restart'))).toBe(false);
+    expect(result).toEqual({});
+  });
+
+  it('recycles a worker that becomes stale-ready during bounded startup', async () => {
+    versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
+    readinessFailuresBeforeSuccess = 1;
+
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };
+    const result = await workerUtils.executeWithWorkerFallback(
+      '/api/test',
+      'GET',
+      undefined,
+      { workerStartupTimeoutMs: 2_000, timeoutMs: 2_000 },
+    );
+
+    expect(killTreeCalls).toHaveLength(1);
+    expect(killTreeCalls[0].pid).toBe(STALE_PID);
+    expect(killTreeCalls[0].options?.signalMode).toBe('immediate');
+    expect(killTreeCalls[0].options?.signal).toBeInstanceOf(AbortSignal);
+    expect(result).toEqual({});
   });
 
   it('does NOT kill or spawn when versions match', async () => {
@@ -162,7 +220,7 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(true);
-    expect(killCalls.length).toBe(0);
+    expect(killTreeCalls.length).toBe(0);
     expect(spawnCalls.length).toBe(0);
     const restartCalls = fetchLog.filter(c => c.url.includes('/api/admin/restart'));
     expect(restartCalls.length).toBe(0);
@@ -176,15 +234,12 @@ describe('ensureWorkerRunning — stale-worker recycle on version mismatch', () 
     const result = await workerUtils.ensureWorkerRunning();
 
     expect(result).toBe(false);
-    expect(killCalls.length).toBe(0);
+    expect(killTreeCalls.length).toBe(0);
     expect(spawnCalls.length).toBe(0);
   });
 
-  it('proceeds to lazy-spawn when the stale worker already exited (ESRCH on kill)', async () => {
+  it('proceeds to lazy-spawn after the stale worker tree is gone', async () => {
     versionMatchResult = { matches: false, pluginVersion: PLUGIN_VERSION, workerVersion: STALE_VERSION };
-    const esrch: NodeJS.ErrnoException = new Error('kill ESRCH');
-    esrch.code = 'ESRCH';
-    killError = esrch;
 
     const workerUtils = await importWorkerUtilsFresh();
     ownedPidInfo = { pid: STALE_PID, port: workerUtils.getWorkerPort(), startedAt: new Date().toISOString() };

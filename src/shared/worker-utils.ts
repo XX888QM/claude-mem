@@ -15,6 +15,7 @@ import { checkVersionMatch } from "../services/infrastructure/index.js";
 // ProcessManager imports nothing from worker-utils, so no cycle.
 import { resolveWorkerRuntimePath } from "../services/infrastructure/ProcessManager.js";
 import { acquireSpawnLock, releaseSpawnLock } from "./worker-spawn-gate.js";
+import { killProcessTree } from "./kill-process-tree.js";
 
 function readTimeoutEnv(
   envName: string,
@@ -204,8 +205,8 @@ async function isWorkerHealthy(): Promise<boolean> {
   return response.ok;
 }
 
-async function isWorkerReady(): Promise<boolean> {
-  const response = await workerHttpRequest('/api/readiness', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+async function isWorkerReady(timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS): Promise<boolean> {
+  const response = await workerHttpRequest('/api/readiness', { timeoutMs });
   return response.ok;
 }
 
@@ -384,9 +385,9 @@ async function waitForWorkerReadiness(timeoutMs: number = HOOK_READINESS_TIMEOUT
  * parsed regardless of status — same contract as restart-verify.ts. Returns
  * null when the worker is unreachable or the payload is malformed.
  */
-async function fetchWorkerHealthVersion(): Promise<string | null> {
+async function fetchWorkerHealthVersion(timeoutMs = HEALTH_CHECK_TIMEOUT_MS): Promise<string | null> {
   try {
-    const response = await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+    const response = await workerHttpRequest('/api/health', { timeoutMs });
     const body = await response.json() as { version?: unknown };
     return typeof body.version === 'string' ? body.version : null;
   } catch (error: unknown) {
@@ -404,15 +405,18 @@ async function fetchWorkerHealthVersion(): Promise<string | null> {
  * rejection here cannot be a live-but-stalled worker.
  */
 async function waitForWorkerPortClosed(timeoutMs = 5000): Promise<boolean> {
-  const start = Date.now();
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
     try {
-      await workerHttpRequest('/api/health', { timeoutMs: HEALTH_CHECK_TIMEOUT_MS });
+      await workerHttpRequest('/api/health', { timeoutMs: Math.min(HEALTH_CHECK_TIMEOUT_MS, remainingMs) });
     } catch {
       return true;
     }
-    if (Date.now() - start >= timeoutMs) return false;
-    await new Promise<void>(resolve => setTimeout(resolve, 200));
+    const nextWaitMs = deadline - Date.now();
+    if (nextWaitMs <= 0) return false;
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(200, nextWaitMs)));
   }
 }
 
@@ -510,18 +514,28 @@ export async function ensureWorkerRunning(): Promise<boolean> {
       });
       return false;
     }
+    // #3482 — a single-PID kill here orphans the stale worker's whole spawn
+    // chain (uvx -> uv -> python -> chroma-mcp). Those descendants inherited
+    // the worker's listening socket, so they keep the port bound after the
+    // root dies: waitForWorkerPortClosed() below never succeeds, every hook
+    // hard-blocks, and the recycle repeats forever (834 health-check failures
+    // observed). This is NOT Windows-specific — on POSIX the same descendants
+    // simply re-parent to init and survive identically.
+    //
+    // 'immediate' is required, not incidental: it sends SIGKILL with no
+    // SIGTERM and no grace window, so the #3378 invariant above still holds
+    // exactly as written — SIGKILL is uncatchable, so zero stale-version
+    // shutdown code runs anywhere in the tree. A graceful tree-kill would let
+    // the stale worker execute the dying install's handoff logic, which is the
+    // restart storm that invariant exists to prevent.
     try {
-      process.kill(stalePidInfo.pid, 'SIGKILL');
+      await killProcessTree(stalePidInfo.pid, { signalMode: 'immediate' });
     } catch (error: unknown) {
-      // ESRCH: it exited between the health probe and the kill — the port is
-      // free (or about to be) either way.
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
-        logger.error('SYSTEM', 'Could not kill stale worker', {
-          pid: stalePidInfo.pid,
-          port: stalePidInfo.port,
-        }, error instanceof Error ? error : new Error(String(error)));
-        return false;
-      }
+      logger.error('SYSTEM', 'Could not kill stale worker', {
+        pid: stalePidInfo.pid,
+        port: stalePidInfo.port,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return false;
     }
     if (!(await waitForWorkerPortClosed())) {
       logger.error('SYSTEM', 'Stale worker port still open after SIGKILL; skipping spawn this hook event', {
@@ -618,6 +632,144 @@ export async function ensureWorkerAliveOnce(): Promise<boolean> {
   if (aliveCache !== null) return aliveCache;
   aliveCache = await ensureWorkerRunning();
   return aliveCache;
+}
+
+async function ensureWorkerReadyWithin(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const remainingMs = (): number => Math.max(0, deadline - Date.now());
+  const resolvedScript = resolveWorkerScript();
+  const pluginVersion = resolvedScript?.version ?? 'unknown';
+
+  const getReadyStatus = async (): Promise<{
+    ready: boolean;
+    matches: boolean;
+    workerVersion: string | null;
+  }> => {
+    const remaining = remainingMs();
+    if (remaining <= 0) return { ready: false, matches: false, workerVersion: null };
+    try {
+      const ready = await isWorkerReady(Math.min(500, remaining));
+      if (!ready) return { ready: false, matches: false, workerVersion: null };
+      const healthTimeoutMs = Math.min(500, remainingMs());
+      if (healthTimeoutMs <= 0) return { ready: false, matches: false, workerVersion: null };
+      const workerVersion = await fetchWorkerHealthVersion(healthTimeoutMs);
+      // Match checkVersionMatch(): unknown versions are not recyclable safely.
+      return {
+        ready: true,
+        matches: pluginVersion === 'unknown' || workerVersion === null || workerVersion === pluginVersion,
+        workerVersion,
+      };
+    } catch {
+      return { ready: false, matches: false, workerVersion: null };
+    }
+  };
+
+  const recycleStaleWorker = async (workerVersion: string | null): Promise<boolean> => {
+    const stalePidInfo = readOwnedWorkerPidInfo();
+    if (stalePidInfo === null || stalePidInfo.port !== getWorkerPort()) {
+      logger.error('SYSTEM', 'Stale worker is serving the port but the PID file does not identify it; skipping bounded recycle', {
+        port: getWorkerPort(),
+        pidFilePid: stalePidInfo?.pid ?? null,
+        pidFilePort: stalePidInfo?.port ?? null,
+      });
+      return false;
+    }
+
+    const killTimeoutMs = remainingMs();
+    if (killTimeoutMs <= 0) return false;
+    const controller = new AbortController();
+    const killed = await new Promise<boolean>(resolve => {
+      const timeout = setTimeout(() => {
+        controller.abort();
+        resolve(false);
+      }, killTimeoutMs);
+      void killProcessTree(stalePidInfo.pid, { signalMode: 'immediate', signal: controller.signal })
+        .then(() => {
+          clearTimeout(timeout);
+          resolve(true);
+        })
+        .catch((error: unknown) => {
+          clearTimeout(timeout);
+          if (!controller.signal.aborted) {
+            logger.error('SYSTEM', 'Could not kill stale worker during bounded recycle', {
+              pid: stalePidInfo.pid,
+              port: stalePidInfo.port,
+              pluginVersion,
+              workerVersion,
+            }, error instanceof Error ? error : new Error(String(error)));
+          }
+          resolve(false);
+        });
+    });
+    if (!killed) return false;
+
+    const closeTimeoutMs = Math.min(5_000, remainingMs());
+    if (closeTimeoutMs <= 0 || !(await waitForWorkerPortClosed(closeTimeoutMs))) {
+      logger.warn('SYSTEM', 'Stale worker port remained open during bounded recycle', {
+        pid: stalePidInfo.pid,
+        port: stalePidInfo.port,
+      });
+      return false;
+    }
+    return true;
+  };
+
+  const runtimePath = resolveWorkerRuntimePath();
+  const resolvedScriptPath = resolvedScript?.scriptPath ?? null;
+  if (!runtimePath || !resolvedScriptPath) return false;
+
+  let spawnLockHeld = false;
+  const spawnCurrentWorker = (): boolean => {
+    if (!spawnLockHeld) {
+      spawnLockHeld = acquireSpawnLock();
+    }
+    try {
+      if (spawnLockHeld) {
+        const proc = spawnHidden(runtimePath, [resolvedScriptPath, '--daemon'], {
+          detached: true,
+          stdio: ['ignore', 'ignore', 'ignore'],
+        });
+        proc.unref();
+      }
+      return true;
+    } catch (error: unknown) {
+      logger.debug('SYSTEM', 'Bounded worker startup failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  let spawned = false;
+  let recycled = false;
+  try {
+    while (remainingMs() > 0) {
+      const status = await getReadyStatus();
+      if (status.ready && status.matches) return true;
+
+      if (status.ready && !status.matches) {
+        // One recycle per bounded hook invocation prevents a stale worker from
+        // turning a 2-second best-effort hook into a restart loop.
+        if (recycled || !(await recycleStaleWorker(status.workerVersion))) return false;
+        recycled = true;
+        spawned = false;
+        continue;
+      }
+
+      if (!spawned) {
+        if (!spawnCurrentWorker()) return false;
+        spawned = true;
+      }
+
+      const delayMs = Math.min(100, remainingMs());
+      if (delayMs > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+    return false;
+  } finally {
+    if (spawnLockHeld) releaseSpawnLock();
+  }
 }
 
 interface HookFailureState {
@@ -776,6 +928,7 @@ export function isWorkerFallback<T>(result: WorkerCallResult<T>): result is Work
 
 export interface WorkerFallbackOptions {
   timeoutMs?: number;
+  workerStartupTimeoutMs?: number;
 }
 
 export async function executeWithWorkerFallback<T = unknown>(
@@ -784,9 +937,14 @@ export async function executeWithWorkerFallback<T = unknown>(
   body?: unknown,
   options: WorkerFallbackOptions = {},
 ): Promise<WorkerCallResult<T>> {
-  const alive = await ensureWorkerAliveOnce();
+  const boundedStartup = options.workerStartupTimeoutMs !== undefined;
+  const alive = boundedStartup
+    ? await ensureWorkerReadyWithin(options.workerStartupTimeoutMs!)
+    : await ensureWorkerAliveOnce();
   if (!alive) {
-    await recordWorkerUnreachable();
+    if (!boundedStartup) {
+      await recordWorkerUnreachable();
+    }
     return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
   }
 
@@ -799,7 +957,16 @@ export async function executeWithWorkerFallback<T = unknown>(
     init.timeoutMs = options.timeoutMs;
   }
 
-  const response = await workerHttpRequest(url, init);
+  let response: Response;
+  try {
+    response = await workerHttpRequest(url, init);
+  } catch (error) {
+    if (!boundedStartup) throw error;
+    logger.debug('SYSTEM', 'Worker unavailable for best-effort hook call', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { continue: true, reason: 'worker_unreachable', [WORKER_FALLBACK_BRAND]: true };
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     resetWorkerFailureCounter();
