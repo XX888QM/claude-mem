@@ -16,18 +16,15 @@ import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
-import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { callMcpToolOnce } from '../../shared/mcp-client.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 
 async function requestSessionStartContext(args: {
   projects: string[];
-  platformSource?: string;
   colors?: boolean;
 }): Promise<string | null> {
   const result = await callMcpToolOnce('session_start_context', {
     projects: args.projects,
-    ...(args.platformSource ? { platformSource: args.platformSource } : {}),
     ...(args.colors !== undefined ? { colors: args.colors } : {}),
   });
   if (result.isError) {
@@ -41,7 +38,6 @@ async function requestSessionStartContext(args: {
 
 async function fetchSessionStartContextViaMcp(args: {
   projects: string[];
-  platformSource?: string;
   colors?: boolean;
 }): Promise<string | null> {
   try {
@@ -81,13 +77,9 @@ export const contextHandler: EventHandler = {
       && input.platform !== 'codex';
 
     const projectsParam = context.allProjects.join(',');
-    const normalizedPlatformSource = input.platform
-      ? normalizePlatformSource(input.platform)
-      : undefined;
-    const platformSourceParam = input.platform
-      ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
-      : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
+    // Read-side context is intentionally cross-source: Claude Code can reuse
+    // Codex/Grok work from the same project. Writes keep their source tags.
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     const emptyResult: HookResult = {
@@ -99,7 +91,6 @@ export const contextHandler: EventHandler = {
     const mcpContextResult = input.platform === 'codex'
       ? await fetchSessionStartContextViaMcp({
           projects: context.allProjects,
-          ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
         })
       : null;
 
@@ -137,7 +128,6 @@ export const contextHandler: EventHandler = {
       const mcpColorResult = input.platform === 'codex'
         ? await fetchSessionStartContextViaMcp({
             projects: context.allProjects,
-            ...(normalizedPlatformSource ? { platformSource: normalizedPlatformSource } : {}),
             colors: true,
           })
         : null;
