@@ -87,16 +87,17 @@ const RESTART_PAGE_HTML = `<!doctype html>
     const health = await fetch('/health', { cache: 'no-store' });
     if (!health.ok) return false;
     const body = await health.json();
-    // No pid means a worker too old to report one — fall back to "healthy"
-    // rather than hanging until the deadline.
-    if (typeof body.pid === 'number' && body.pid === outgoingPid) return false;
+    // Only a numeric PID that differs from the outgoing worker proves that a
+    // successor answered. A healthy response without identity could be the
+    // dying worker or an unrelated process that owns the port.
+    if (typeof body.pid !== 'number' || body.pid === outgoingPid) return false;
 
     // Binding the port is not being ready to observe: the successor opens the
     // database, bootstraps chroma and connects MCP after it starts listening,
     // and readiness stays 503 through all of it. This is the same signal the
-    // CLI restart path verifies. 404 means a worker too old to expose it.
+    // CLI restart path verifies.
     const readiness = await fetch('/api/readiness', { cache: 'no-store' });
-    return readiness.ok || readiness.status === 404;
+    return readiness.ok;
   }
 
   async function waitForSuccessor(deadlineMs) {

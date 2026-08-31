@@ -81,9 +81,9 @@ describe('GET /restart', () => {
     expect(html).toContain('body.pid === outgoingPid) return false');
   });
 
-  it('still finishes against a worker too old to report a pid', () => {
+  it('requires a numeric successor pid distinct from the outgoing worker', () => {
     const { html } = renderRestartPage();
-    expect(html).toContain("typeof body.pid === 'number'");
+    expect(html).toContain("if (typeof body.pid !== 'number' || body.pid === outgoingPid) return false;");
   });
 
   // A bound port is not a ready worker: the successor opens the DB, bootstraps
@@ -95,9 +95,10 @@ describe('GET /restart', () => {
     expect(html.indexOf('body.pid')).toBeLessThan(html.indexOf('/api/readiness'));
   });
 
-  it('does not block on readiness against a worker too old to expose it', () => {
+  it('requires readiness before reporting a successful restart', () => {
     const { html } = renderRestartPage();
-    expect(html).toContain('readiness.status === 404');
+    expect(html).toContain('return readiness.ok;');
+    expect(html).not.toContain('readiness.status === 404');
   });
 });
 
