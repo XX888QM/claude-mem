@@ -332,6 +332,9 @@ export class SessionRoutes extends BaseRouteHandler {
           sessionManager: this.sessionManager,
           completionHandler: this.completionHandler,
         });
+        if (reason === 'overflow:recycle') {
+          void this.ensureGeneratorRunning(session.sessionDbId, 'overflow-recycle');
+        }
       });
     session.generatorPromise = generatorPromise;
   }
