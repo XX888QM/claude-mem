@@ -188,7 +188,7 @@ export function buildObservationBatchPrompt(observations: Observation[]): string
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
-Return either one or more <observation>...</observation> blocks, or an empty response if ${observations.length === 1 ? 'this tool use' : 'these tool uses'} should be skipped.
+Return either one or more <observation>...</observation> blocks, or <skip_summary reason="noise" /> if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
 }
