@@ -1,3 +1,4 @@
+import path from 'path';
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
@@ -8,14 +9,21 @@ const pickAgentField = (v: unknown): string | undefined =>
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    // Real Claude Code always sends `cwd` on every hook event; falling back to
-    // process.cwd() here let non-Claude-Code callers (e.g. Cursor's Claude Code
-    // hook-compatibility shim invoking these scripts without a real cwd) slip
-    // through with cwd = wherever the script happened to be run from, landing
-    // sessions under a bogus project name (a claude-mem version/hash string).
-    const cwd = r.cwd;
+    const cwd = r.cwd ?? process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
+    }
+    // Claude Code sets CLAUDE_PLUGIN_ROOT to this plugin's own install directory
+    // when invoking its hooks. A real project session's cwd is never inside that
+    // directory — the only way to land there is a caller with no real cwd that
+    // also spawned us with our own install path as its process cwd (observed:
+    // Cursor's Claude Code hook-compatibility layer, invoking `hook claude-code
+    // <event>` for ordinary Cursor prompts). Reject that specific case instead
+    // of the general "no cwd" one, which the process.cwd() fallback above still
+    // needs to handle gracefully for other loosely-compatible callers (#744).
+    const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT;
+    if (pluginRoot && (cwd === pluginRoot || cwd.startsWith(pluginRoot + path.sep))) {
+      throw new AdapterRejectedInput('cwd_inside_plugin_root');
     }
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,
