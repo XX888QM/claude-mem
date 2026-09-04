@@ -332,7 +332,7 @@ export function ContextSettingsModal({
             >
               <FormField
                 label="AI Provider"
-                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), or OpenRouter — also used by the claude-mem observer"
+                tooltip="Choose the provider that generates observations: Claude (via Agent SDK), Gemini (via REST API), OpenRouter, Codex CLI, or Grok CLI — also used by the claude-mem observer"
               >
                 <select
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
@@ -341,6 +341,8 @@ export function ContextSettingsModal({
                   <option value="claude">Claude (uses your Claude account)</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
+                  <option value="codex">Codex</option>
+                  <option value="grok">Grok</option>
                 </select>
               </FormField>
 
@@ -445,6 +447,64 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_APP_NAME', e.target.value)}
                       placeholder="claude-mem"
                     />
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
+                <>
+                  <FormField
+                    label="Codex Model"
+                    tooltip="Codex CLI model used for generating observations"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_MODEL || 'gpt-5.6-luna'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)}
+                    >
+                      <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Codex Reasoning Effort"
+                    tooltip="How much the Codex CLI reasons before responding"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CODEX_REASONING_EFFORT || 'medium'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CODEX_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </FormField>
+                </>
+              )}
+
+              {formState.CLAUDE_MEM_PROVIDER === 'grok' && (
+                <>
+                  <FormField
+                    label="Grok Model"
+                    tooltip="Grok CLI model used for generating observations"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_GROK_MODEL || 'grok-4.5'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GROK_MODEL', e.target.value)}
+                      placeholder="grok-4.5"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Grok Reasoning Effort"
+                    tooltip="How much the Grok CLI reasons before responding (low/medium/high — anything else normalizes to medium)"
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_GROK_REASONING_EFFORT || 'medium'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_GROK_REASONING_EFFORT', e.target.value)}
+                    >
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
                   </FormField>
                 </>
               )}
