@@ -8,7 +8,12 @@ const pickAgentField = (v: unknown): string | undefined =>
 export const claudeCodeAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
-    const cwd = r.cwd ?? process.cwd();
+    // Real Claude Code always sends `cwd` on every hook event; falling back to
+    // process.cwd() here let non-Claude-Code callers (e.g. Cursor's Claude Code
+    // hook-compatibility shim invoking these scripts without a real cwd) slip
+    // through with cwd = wherever the script happened to be run from, landing
+    // sessions under a bogus project name (a claude-mem version/hash string).
+    const cwd = r.cwd;
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
