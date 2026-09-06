@@ -4,6 +4,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import { OBSERVER_SESSIONS_PROJECT } from '../../shared/paths.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../shared/user-prompts.js';
+import { cursorShadowClaudeExcludeSql } from '../../shared/cursor-claude-shadow.js';
 import type { PaginatedResult, Observation, Summary, UserPrompt } from '../worker-types.js';
 
 export class PaginationHelper {
@@ -89,6 +90,8 @@ export class PaginationHelper {
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
+    } else {
+      conditions.push(cursorShadowClaudeExcludeSql('s'));
     }
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
@@ -145,6 +148,8 @@ export class PaginationHelper {
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
+    } else {
+      conditions.push(cursorShadowClaudeExcludeSql('s'));
     }
 
     if (conditions.length > 0) {
@@ -196,6 +201,8 @@ export class PaginationHelper {
     if (platformSource) {
       conditions.push(`COALESCE(s.platform_source, 'claude') = ?`);
       params.push(platformSource);
+    } else {
+      conditions.push(cursorShadowClaudeExcludeSql('s'));
     }
 
     conditions.push(`

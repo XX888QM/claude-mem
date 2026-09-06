@@ -10,6 +10,7 @@ import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
 import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
+import { CURSOR_SHADOW_REASON, isClaudeShadowOfCursor } from '../../../shared/cursor-claude-shadow.js';
 
 interface IngestContext {
   sessionManager: SessionManager;
@@ -84,6 +85,13 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
   }
 
   const store = dbManager.getSessionStore();
+  if (isClaudeShadowOfCursor(platformSource, store.hasSDKSession(payload.contentSessionId, 'cursor'))) {
+    logger.info('INGEST', 'Skipping Claude Code hook that duplicates an existing Cursor session', {
+      contentSessionId: payload.contentSessionId,
+      toolName: payload.toolName,
+    });
+    return { ok: true, status: 'skipped', reason: CURSOR_SHADOW_REASON };
+  }
 
   let sessionDbId: number;
   let promptNumber: number;

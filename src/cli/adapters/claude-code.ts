@@ -1,6 +1,8 @@
 import path from 'path';
 import type { PlatformAdapter, NormalizedHookInput, HookResult } from '../types.js';
 import { AdapterRejectedInput, isValidCwd } from './errors.js';
+import { deriveCursorTranscriptPath } from './cursor.js';
+import { looksLikeCursorNativeHookPayload } from '../../shared/cursor-claude-shadow.js';
 
 const MAX_AGENT_FIELD_LEN = 128;
 const pickAgentField = (v: unknown): string | undefined =>
@@ -24,6 +26,14 @@ export const claudeCodeAdapter: PlatformAdapter = {
     const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.PLUGIN_ROOT;
     if (pluginRoot && (cwd === pluginRoot || cwd.startsWith(pluginRoot + path.sep))) {
       throw new AdapterRejectedInput('cwd_inside_plugin_root');
+    }
+    // Cursor also fires native `hook cursor` events. Its Claude Code
+    // compatibility layer re-invokes these same hooks as `claude-code` for
+    // the same conversation, which used to create a second session labeled
+    // CLAUDE. Drop that ghost path; the cursor hooks already recorded it.
+    const sessionId = r.session_id ?? r.id ?? r.sessionId ?? r.conversation_id;
+    if (looksLikeCursorNativeHookPayload(r) || deriveCursorTranscriptPath(cwd, sessionId)) {
+      throw new AdapterRejectedInput('cursor_compat_duplicate');
     }
     return {
       sessionId: r.session_id ?? r.id ?? r.sessionId,

@@ -735,7 +735,12 @@ ${I.stack??""}
       ${n}
       ORDER BY created_at_epoch DESC
       LIMIT 1
-    `).get(...s)||null}getSessionById(e){return this.db.prepare(`
+    `).get(...s)||null}hasSDKSession(e,t){let s=L(t);return this.db.prepare(`
+      SELECT id
+      FROM sdk_sessions
+      WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
+        AND content_session_id = ?
+    `).get(p,s,e)!=null}getSessionById(e){return this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${p}') as platform_source,
              user_prompt, custom_title, status,

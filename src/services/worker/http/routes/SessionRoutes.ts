@@ -33,6 +33,7 @@ import { handleGeneratorExit } from '../../session/GeneratorExitHandler.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
+import { CURSOR_SHADOW_REASON, isClaudeShadowOfCursor } from '../../../../shared/cursor-claude-shadow.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
   clearDependencyStatus,
@@ -435,6 +436,13 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
+    if (isClaudeShadowOfCursor(platformSource, store.hasSDKSession(contentSessionId, 'cursor'))) {
+      logger.info('HTTP', 'Skipping Claude Code summarize that duplicates an existing Cursor session', {
+        contentSessionId,
+      });
+      res.json({ status: 'skipped', reason: CURSOR_SHADOW_REASON });
+      return;
+    }
 
     const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
@@ -503,6 +511,14 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const store = this.dbManager.getSessionStore();
+    if (isClaudeShadowOfCursor(platformSource, store.hasSDKSession(contentSessionId, 'cursor'))) {
+      logger.info('HTTP', 'Skipping Claude Code session-init that duplicates an existing Cursor session', {
+        contentSessionId,
+        project,
+      });
+      res.json({ skipped: true, reason: CURSOR_SHADOW_REASON });
+      return;
+    }
 
     const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
 

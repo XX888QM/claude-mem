@@ -128,6 +128,10 @@ export const sessionInitHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    if (initResult?.skipped) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
     if (typeof initResult?.sessionDbId !== 'number') {
       logger.failure('HOOK', 'Session initialization returned malformed response', { contentSessionId: sessionId, project });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
