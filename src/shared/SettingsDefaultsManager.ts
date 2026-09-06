@@ -38,6 +38,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SUMMARY_EFFORT: string;
   CLAUDE_MEM_GROK_MODEL: string;
   CLAUDE_MEM_GROK_REASONING_EFFORT: string;
+  CLAUDE_MEM_GROK_EXEC_TIMEOUT_MS: string;
   CLAUDE_MEM_OPENROUTER_API_KEY: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
@@ -161,6 +162,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SUMMARY_EFFORT: 'high',
     CLAUDE_MEM_GROK_MODEL: 'grok-4.5',
     CLAUDE_MEM_GROK_REASONING_EFFORT: 'medium',
+    CLAUDE_MEM_GROK_EXEC_TIMEOUT_MS: '360000',
     CLAUDE_MEM_OPENROUTER_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',  // Default OpenRouter model (free tier)
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.

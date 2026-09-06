@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
@@ -8,6 +8,8 @@ import {
   DEFAULT_GROK_REASONING_EFFORT,
   GrokProvider,
   buildGrokExecArgs,
+  buildGrokExecEnv,
+  ensureObserverGrokHome,
   isGrokQuotaCooldownActive,
   resetGrokQuotaCooldownForTesting,
   normalizeGrokObserverXml,
@@ -138,10 +140,33 @@ describe('GrokProvider', () => {
     }
   });
 
+  it('seeds an ephemeral Grok home without the user MCP config', () => {
+    const home = mkdtempSync(join(tmpdir(), 'grok-home-'));
+    try {
+      ensureObserverGrokHome(home);
+      const config = readFileSync(join(home, 'config.toml'), 'utf8');
+      expect(config).toContain('auto_update = false');
+      expect(config).not.toContain('mcp_servers');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('points HOME at the ephemeral Grok home so user MCP is not merged', () => {
+    const env = buildGrokExecEnv('/tmp/claude-mem-grok-home');
+    expect(env.GROK_HOME).toBe('/tmp/claude-mem-grok-home');
+    expect(env.HOME).toBe('/tmp/claude-mem-grok-home');
+    expect(env.GROK_NO_MEMORY).toBe('1');
+    expect(env.CLAUDE_MEM_SUPPRESS_HOOKS).toBe('1');
+    expect(env.REAL_HOME).toBeTruthy();
+    expect(env.GROK_AUTH_PATH).toContain('.grok/auth.json');
+  });
+
   it('keeps the Grok model separate from the Claude model setting', () => {
     const defaults = SettingsDefaultsManager.getAllDefaults();
     expect(defaults.CLAUDE_MEM_GROK_MODEL).toBe('grok-4.5');
     expect(defaults.CLAUDE_MEM_GROK_REASONING_EFFORT).toBe('medium');
+    expect(defaults.CLAUDE_MEM_GROK_EXEC_TIMEOUT_MS).toBe('360000');
   });
 
   it('uses summary-only model and effort without changing observation config', () => {

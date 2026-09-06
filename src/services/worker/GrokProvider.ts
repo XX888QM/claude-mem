@@ -2,20 +2,20 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import {
   DATA_DIR,
-  ensureDir,
-  OBSERVER_SESSIONS_DIR,
   USER_SETTINGS_PATH,
 } from '../../shared/paths.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
@@ -49,7 +49,9 @@ const MAX_CONTEXT_MESSAGES = 1; // Grok CLI is single-shot; only latest task
 const MAX_ESTIMATED_TOKENS = 8_000; // ~keep prompt small enough for headless reliability
 const MAX_PROMPT_CHARS = 24_000;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
-const GROK_EXEC_TIMEOUT_MS = 180_000;
+const DEFAULT_GROK_EXEC_TIMEOUT_MS = 360_000;
+const MIN_GROK_EXEC_TIMEOUT_MS = 30_000;
+const MAX_GROK_EXEC_TIMEOUT_MS = 15 * 60_000;
 const GROK_QUOTA_RETRY_COOLDOWN_MS = 5 * 60_000;
 const GROK_BUSY_COOLDOWN_MS = 90_000;
 const DEFAULT_MAX_CONCURRENT_GROK = 2;
@@ -164,6 +166,7 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
       1,
       parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || DEFAULT_MAX_CONCURRENT_GROK,
     );
+    const timeoutMs = resolveGrokExecTimeoutMs(settings.CLAUDE_MEM_GROK_EXEC_TIMEOUT_MS);
 
     const releaseSlot = await acquireGrokSlot(maxConcurrent, session?.abortController.signal);
 
@@ -188,8 +191,7 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
       )),
     ].join('\n');
 
-    ensureDir(OBSERVER_SESSIONS_DIR);
-    const workDir = mkdtempSync(join(OBSERVER_SESSIONS_DIR, 'grok-'));
+    const workDir = mkdtempSync(join(tmpdir(), 'claude-mem-grok-'));
     const promptPath = join(workDir, 'prompt.txt');
     writeFileSync(promptPath, prompt, 'utf-8');
     const args = buildGrokExecArgs(
@@ -198,7 +200,7 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
       workDir,
       config.reasoningEffort,
     );
-    const grokHome = ensureObserverGrokHome();
+    const grokHome = ensureObserverGrokHome(workDir);
 
     try {
       logger.info('SDK', 'Querying Grok', {
@@ -208,11 +210,12 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
         promptChars: prompt.length,
         activeGrokExecs,
         maxConcurrent,
+        timeoutMs,
         grokHome,
         source: session?.lastGeneratorSource,
       });
       try {
-        const content = await runGrokExec(args, session?.abortController.signal, grokHome);
+        const content = await runGrokExec(args, session?.abortController.signal, grokHome, timeoutMs);
         const normalized = normalizeGrokObserverXml(sanitizeGrokOutput(content));
         if (!normalized) {
           // Nothing to store — return empty so the parent can skip without
@@ -314,15 +317,20 @@ function createAbortError(message: string): Error {
 /**
  * Private GROK_HOME so observer/summary CLI sessions do not appear under the
  * user's real ~/.grok session list. Reuses auth via symlink when possible.
+ *
+ * Always pass a fresh directory (the per-call workDir). The shared
+ * ~/.claude-mem/observer-grok-home accumulates session_search.sqlite /
+ * memtrace and makes headless `grok` sit at 0% CPU with no network.
+ * Never copy the user's config.toml — it starts their MCP servers.
+ * Callers must also set HOME to this directory; GROK_HOME alone is not
+ * enough because the CLI still reads $HOME/.grok MCP and plugins.
  */
-export function ensureObserverGrokHome(): string {
-  const home = OBSERVER_GROK_HOME;
+export function ensureObserverGrokHome(home: string = OBSERVER_GROK_HOME): string {
   mkdirSync(home, { recursive: true });
   mkdirSync(join(home, 'sessions'), { recursive: true });
 
   const realGrok = join(homedir(), '.grok');
-  // Files the CLI needs for membership login / model cache.
-  for (const name of ['auth.json', 'models_cache.json', 'config.toml', 'agent_id']) {
+  for (const name of ['auth.json', 'models_cache.json', 'agent_id']) {
     const target = join(home, name);
     const source = join(realGrok, name);
     if (existsSync(target) || !existsSync(source)) continue;
@@ -337,7 +345,13 @@ export function ensureObserverGrokHome(): string {
     }
   }
 
-  // Prefer a private binary path lookup still via PATH; only home is isolated.
+  const configPath = join(home, 'config.toml');
+  try {
+    if (lstatSync(configPath).isSymbolicLink()) unlinkSync(configPath);
+  } catch {
+    // missing is fine
+  }
+  writeFileSync(configPath, '[cli]\nauto_update = false\n');
   return home;
 }
 
@@ -557,7 +571,13 @@ function classifyGrokExecError(code: number | null, stderr: string, stdout: stri
   return cause;
 }
 
-function runGrokExec(args: string[], signal?: AbortSignal, grokHome?: string): Promise<string> {
+function resolveGrokExecTimeoutMs(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? '', 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_GROK_EXEC_TIMEOUT_MS;
+  return Math.min(MAX_GROK_EXEC_TIMEOUT_MS, Math.max(MIN_GROK_EXEC_TIMEOUT_MS, parsed));
+}
+
+function runGrokExec(args: string[], signal?: AbortSignal, grokHome?: string, timeoutMs = DEFAULT_GROK_EXEC_TIMEOUT_MS): Promise<string> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError('Grok exec aborted before start'));
   }
@@ -566,12 +586,7 @@ function runGrokExec(args: string[], signal?: AbortSignal, grokHome?: string): P
     const invocation = resolveGrokSpawnInvocation(args);
     const child = spawn(invocation.command, invocation.args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...sanitizeEnv(process.env),
-        CLAUDE_MEM_SUPPRESS_HOOKS: '1',
-        GROK_NO_MEMORY: '1',
-        ...(grokHome ? { GROK_HOME: grokHome } : {}),
-      },
+      env: buildGrokExecEnv(grokHome),
       detached: process.platform !== 'win32',
       windowsHide: true,
     });
@@ -606,8 +621,8 @@ function runGrokExec(args: string[], signal?: AbortSignal, grokHome?: string): P
 
     const onAbort = () => terminate(createAbortError('Grok exec aborted'));
     const timeoutTimer = setTimeout(() => {
-      terminate(createAbortError(`Grok exec timed out after ${GROK_EXEC_TIMEOUT_MS}ms`));
-    }, GROK_EXEC_TIMEOUT_MS);
+      terminate(createAbortError(`Grok exec timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
     timeoutTimer.unref?.();
 
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -658,6 +673,26 @@ export function resetGrokQuotaCooldownForTesting(): void {
   grokQuotaBlockedUntil = 0;
   activeGrokExecs = 0;
   grokSlotWaiters.length = 0;
+}
+
+export function buildGrokExecEnv(grokHome?: string): NodeJS.ProcessEnv {
+  const realHome = homedir();
+  return {
+    ...sanitizeEnv(process.env),
+    CLAUDE_MEM_SUPPRESS_HOOKS: '1',
+    GROK_NO_MEMORY: '1',
+    // grok-observer reads REAL_HOME / GROK_AUTH_PATH; isolated HOME would
+    // otherwise hide ~/.grok/auth.json.
+    REAL_HOME: realHome,
+    GROK_AUTH_PATH: join(realHome, '.grok', 'auth.json'),
+    ...(grokHome
+      ? {
+          GROK_HOME: grokHome,
+          // GROK_HOME does not stop the CLI from merging $HOME/.grok MCP.
+          HOME: grokHome,
+        }
+      : {}),
+  };
 }
 
 export function buildGrokExecArgs(
