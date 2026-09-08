@@ -147,6 +147,22 @@ describe('cursor-extraction: cursorAdapter transcriptPath derivation', () => {
     expect(deriveCursorTranscriptPath(fakeCwd, undefined)).toBeUndefined();
   });
 
+  it('finds transcripts for Chinese workspace paths using Cursor ASCII slugs', () => {
+    const cwd = '/Users/example/量化交易/做市PM';
+    const dir = join(homedir(), '.cursor', 'projects', 'Users-example-PM', 'agent-transcripts', sessionId);
+    const file = join(dir, `${sessionId}.jsonl`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, JSON.stringify({ role: 'assistant', message: { content: 'summary source' } }));
+    try {
+      const input = cursorAdapter.normalizeInput({ workspace_roots: [cwd], conversation_id: sessionId });
+      expect(input.transcriptPath).toBe(file);
+      expect(extractLastMessage(input.transcriptPath!, 'assistant')).toBe('summary source');
+      expect(deriveCursorTranscriptPath(cwd, '../escape')).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('returns undefined when cwd is missing (deriveCursorTranscriptPath direct call)', () => {
     expect(deriveCursorTranscriptPath(undefined, sessionId)).toBeUndefined();
   });

@@ -23,8 +23,13 @@ export function deriveCursorTranscriptPath(cwd: string | undefined, sessionId: s
   if (!cwd || !sessionId) return undefined;
   if (!SAFE_SESSION_ID_RE.test(sessionId)) return undefined;
   const slug = cwd.replace(/^\//, '').replace(/[/.]/g, '-');
-  const candidate = join(homedir(), '.cursor', 'projects', slug, 'agent-transcripts', sessionId, `${sessionId}.jsonl`);
-  return existsSync(candidate) ? candidate : undefined;
+  // Current Cursor collapses non-ASCII/non-alphanumeric runs, including Chinese paths.
+  const asciiSlug = cwd.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '');
+  for (const workspaceSlug of [slug, asciiSlug]) {
+    const candidate = join(homedir(), '.cursor', 'projects', workspaceSlug, 'agent-transcripts', sessionId, `${sessionId}.jsonl`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 export const cursorAdapter: PlatformAdapter = {
