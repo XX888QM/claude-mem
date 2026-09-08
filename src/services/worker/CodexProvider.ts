@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { ensureDir, OBSERVER_SESSIONS_DIR, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -125,13 +126,14 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     );
 
     try {
+      const codexHome = prepareIsolatedCodexHome(workDir);
       logger.info('SDK', 'Querying Codex', {
         model: config.model,
         reasoningEffort: config.reasoningEffort,
         turns: truncated.length,
       });
       try {
-        const execResult = await runCodexExec(args, prompt, session?.abortController.signal);
+        const execResult = await runCodexExec(args, prompt, session?.abortController.signal, codexHome);
         codexQuotaBlockedUntil = 0;
         if (execResult.usage) {
           const recorded = recordCodexUsage({
@@ -174,8 +176,11 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         throw error;
       }
     } finally {
-      rmSync(workDir, { recursive: true, force: true });
-      releaseSlot();
+      try {
+        rmSync(workDir, { recursive: true, force: true });
+      } finally {
+        releaseSlot();
+      }
     }
   }
 
@@ -320,7 +325,17 @@ interface CodexExecResult {
   usage: CodexCliUsage | null;
 }
 
-function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Promise<CodexExecResult> {
+export function prepareIsolatedCodexHome(workDir: string, sourceHome = process.env.CODEX_HOME || join(homedir(), '.codex')): string {
+  const codexHome = join(workDir, 'codex-home');
+  mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+
+  const authPath = join(sourceHome, 'auth.json');
+  if (existsSync(authPath)) copyFileSync(authPath, join(codexHome, 'auth.json'));
+
+  return codexHome;
+}
+
+function runCodexExec(args: string[], stdin: string, signal?: AbortSignal, codexHome?: string): Promise<CodexExecResult> {
   if (signal?.aborted) {
     return Promise.reject(createAbortError('Codex exec aborted before start'));
   }
@@ -332,6 +347,7 @@ function runCodexExec(args: string[], stdin: string, signal?: AbortSignal): Prom
       env: {
         ...sanitizeEnv(process.env),
         CLAUDE_MEM_SUPPRESS_HOOKS: '1',
+        ...(codexHome ? { CODEX_HOME: codexHome } : {}),
       },
       detached: process.platform !== 'win32',
       windowsHide: true,

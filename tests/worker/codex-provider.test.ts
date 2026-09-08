@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
@@ -11,6 +11,7 @@ import {
   isCodexQuotaCooldownActive,
   normalizeCodexObserverOutput,
   parseCodexCliUsage,
+  prepareIsolatedCodexHome,
   resetCodexQuotaCooldownForTesting,
 } from '../../src/services/worker/CodexProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -94,6 +95,23 @@ describe('CodexProvider', () => {
     );
 
     expect(args).toContain('model_reasoning_effort="none"');
+  });
+
+  it('uses login state without loading the interactive Codex config', () => {
+    const root = mkdtempSync(join(tmpdir(), 'claude-mem-codex-home-'));
+    const sourceHome = join(root, 'source');
+    const workDir = join(root, 'work');
+    mkdirSync(sourceHome);
+    writeFileSync(join(sourceHome, 'auth.json'), '{}');
+    writeFileSync(join(sourceHome, 'config.toml'), '[features.context_management]\nexperimental_mode = true\n');
+
+    try {
+      const codexHome = prepareIsolatedCodexHome(workDir, sourceHome);
+      expect(existsSync(join(codexHome, 'auth.json'))).toBe(true);
+      expect(existsSync(join(codexHome, 'config.toml'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps the Codex model separate from the Claude model setting', () => {
