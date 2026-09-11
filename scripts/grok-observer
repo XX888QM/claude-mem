@@ -1,0 +1,246 @@
+#!/bin/bash
+# claude-mem Grok observer — NO Grok CLI sessions
+#
+# Why: calling `~/.grok/bin/grok` creates remote chat history under the same
+# OIDC account, which floods Grok CLI /resume with "You are the claude-mem
+# observer..." entries (status=remote). Local GROK_HOME isolation cannot hide
+# remote history, and `grok sessions delete` only removes local copies.
+#
+# Fix: for observer prompt-file jobs, call api.x.ai chat/completions directly
+# with the cached OIDC token. Zero local/remote Grok session records.
+#
+# Worker invokes us via GROK_PATH with args like:
+#   --prompt-file PATH --output-format plain --no-memory ... -m MODEL
+#   --reasoning-effort LEVEL --cwd DIR
+set -euo pipefail
+
+REAL_HOME="${REAL_HOME:-$HOME}"
+REAL_GROK="${REAL_GROK:-$REAL_HOME/.grok/bin/grok}"
+AUTH_JSON="${GROK_AUTH_PATH:-$REAL_HOME/.grok/auth.json}"
+LOG="${CLAUDE_MEM_GROK_OBSERVER_LOG:-$REAL_HOME/.claude-mem/logs/grok-observer-api.log}"
+TOKEN_LOG="${TOKENSTAT_GROK_LOG:-$REAL_HOME/.grok/logs/unified.jsonl}"
+mkdir -p "$(dirname "$LOG")"
+
+log() {
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true
+}
+
+# Parse the subset of flags the worker actually uses.
+PROMPT_FILE=""
+MODEL="grok-4.5"
+REASONING=""
+OUTPUT_FORMAT="plain"
+i=1
+args=("$@")
+while [ "$i" -le "$#" ]; do
+  a="${args[$((i-1))]}"
+  case "$a" in
+    --prompt-file)
+      i=$((i+1)); PROMPT_FILE="${args[$((i-1))]:-}" ;;
+    -m|--model)
+      i=$((i+1)); MODEL="${args[$((i-1))]:-grok-4.5}" ;;
+    --reasoning-effort|--effort)
+      i=$((i+1)); REASONING="${args[$((i-1))]:-}" ;;
+    --output-format)
+      i=$((i+1)); OUTPUT_FORMAT="${args[$((i-1))]:-plain}" ;;
+    --cwd|--max-turns|--tools|--prompt-json|--session-id|-s|-r|--resume|--system-prompt-override)
+      i=$((i+1)) ;; # skip value
+    --no-memory|--no-subagents|--verbatim|--disable-web-search|--no-auto-update|--always-approve|--debug|--single|-p)
+      ;; # flags without values (or already consumed)
+  esac
+  i=$((i+1))
+done
+
+# If this is not an observer prompt-file job, fall back to isolated real grok
+# (should not happen for claude-mem worker, but keep a safe path).
+if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
+  log "fallback real grok (no prompt-file): $*"
+  OBS_HOME="${CLAUDE_MEM_GROK_HOME:-$REAL_HOME/.claude-mem/observer-grok-home}"
+  export HOME="$OBS_HOME"
+  export GROK_HOME="$OBS_HOME"
+  export GROK_NO_MEMORY=1
+  exec "$REAL_GROK" "$@"
+fi
+
+# Direct API path — no session created.
+export PROMPT_FILE MODEL REASONING AUTH_JSON OUTPUT_FORMAT TOKEN_LOG REAL_HOME REAL_GROK
+python3 - <<'PY'
+import fcntl, json, os, subprocess, sys, time, urllib.error, urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+prompt_file = os.environ["PROMPT_FILE"]
+model = os.environ.get("MODEL") or "grok-4.5"
+reasoning = (os.environ.get("REASONING") or "").strip()
+auth_path = Path(os.environ["AUTH_JSON"])
+log_path = Path(os.environ.get("HOME", "/tmp")) / ".claude-mem/logs/grok-observer-api.log"
+# Prefer explicit log under real home via env already set by shell when possible
+if "CLAUDE_MEM_GROK_OBSERVER_LOG" in os.environ:
+    log_path = Path(os.environ["CLAUDE_MEM_GROK_OBSERVER_LOG"])
+
+def log(msg: str) -> None:
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            from datetime import datetime
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    except Exception:
+        pass
+
+try:
+    prompt = Path(prompt_file).read_text(encoding="utf-8", errors="replace")
+except Exception as e:
+    print(f"grok-observer: failed to read prompt-file: {e}", file=sys.stderr)
+    sys.exit(2)
+
+if not auth_path.is_file():
+    print(f"grok-observer: missing auth.json at {auth_path}", file=sys.stderr)
+    sys.exit(2)
+
+def read_auth():
+    auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    entry = next(iter(auth.values()))
+    token = entry.get("key") or entry.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("missing access token")
+    return entry, token
+
+
+def near_expiry(entry):
+    expiry = entry.get("expires_at")
+    return bool(expiry and datetime.fromisoformat(expiry.replace("Z", "+00:00")).timestamp() <= time.time() + 300)
+
+
+def get_token(rejected=None):
+    entry, token = read_auth()
+    if not near_expiry(entry) and token != rejected:
+        return token
+    # Only serialize renewal, not inference. The native CLI owns credential writes.
+    fd = os.open(str(auth_path) + ".observer-refresh.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as lock:
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("credential refresh lock timed out")
+                time.sleep(0.1)
+        entry, token = read_auth()
+        if not near_expiry(entry) and token != rejected:
+            return token
+        if not entry.get("refresh_token"):
+            raise RuntimeError("Grok login required: no refresh token")
+        env = dict(os.environ, HOME=os.environ["REAL_HOME"], GROK_AUTH_EARLY_INVALIDATION_SECS="300")
+        env.pop("GROK_HOME", None)
+        # `models` performs native silent refresh without creating a chat/session.
+        subprocess.run([os.environ["REAL_GROK"], "models"], env=env,
+                       cwd=os.environ["REAL_HOME"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=45, check=True)
+        renewed, fresh = read_auth()
+        if fresh == token or near_expiry(renewed):
+            raise RuntimeError("Grok login required: silent refresh did not renew credentials")
+        log("credentials renewed via native Grok CLI")
+        return fresh
+
+
+try:
+    token = get_token()
+except Exception:
+    print("grok-observer: credential refresh failed; retry or sign in with grok login", file=sys.stderr)
+    sys.exit(1)
+
+body = {
+    "model": model,
+    "messages": [
+        {
+            "role": "user",
+            "content": prompt,
+        }
+    ],
+    # Observer only needs short XML; keep cheap/fast.
+    "temperature": 0,
+}
+if reasoning:
+    # xAI accepts reasoning_effort on reasoning models; ignore if rejected.
+    body["reasoning_effort"] = reasoning
+
+data = json.dumps(body).encode("utf-8")
+try:
+    for attempt in range(2):
+        req = urllib.request.Request(
+            "https://api.x.ai/v1/chat/completions", data=data,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                     "User-Agent": "claude-mem-grok-observer/1.0"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+            break
+        except urllib.error.HTTPError as error:
+            err = error.read().decode("utf-8", errors="replace")[:800]
+            try:
+                code = json.loads(err).get("code")
+            except (ValueError, AttributeError):
+                code = None
+            auth_error = error.code == 401 or (error.code == 403 and code == "unauthenticated:bad-credentials")
+            if attempt == 0 and auth_error:
+                token = get_token(rejected=token)
+                continue
+            log(f"HTTP {error.code} model={model}")
+            print(f"grok-observer: API HTTP {error.code}", file=sys.stderr)
+            sys.exit(1)
+except Exception:
+    log("request or credential renewal failed")
+    print("grok-observer: request or credential renewal failed; check Grok login/connectivity", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    content = payload["choices"][0]["message"]["content"] or ""
+except Exception:
+    log(f"bad response: {str(payload)[:300]}")
+    print("grok-observer: unexpected API response", file=sys.stderr)
+    sys.exit(1)
+
+usage = payload.get("usage") or {}
+prompt_tokens = int(usage.get("prompt_tokens") or 0)
+completion_tokens = int(usage.get("completion_tokens") or 0)
+total_tokens = int(usage.get("total_tokens") or 0)
+cached_tokens = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+reasoning_tokens = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+# xAI currently excludes reasoning from completion_tokens; total_tokens keeps this correct
+# if that response convention changes later.
+billed_completion = max(completion_tokens, total_tokens - prompt_tokens)
+
+if prompt_tokens or billed_completion:
+    from datetime import datetime, timezone
+    token_log = Path(os.environ["TOKEN_LOG"])
+    token_log.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    event = {
+        "ts": ts,
+        "src": "claude-mem",
+        "sid": "claude-mem-grok-api",
+        "msg": "shell.turn.inference_done",
+        "ctx": {
+            "loop_index": payload.get("id") or ts,
+            "prompt_tokens": prompt_tokens,
+            "cached_prompt_tokens": cached_tokens,
+            "completion_tokens": billed_completion,
+            "reasoning_tokens": min(reasoning_tokens, billed_completion),
+            "model": payload.get("model") or model,
+            "cwd": "claude-mem",
+        },
+    }
+    fd = os.open(token_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (json.dumps(event, separators=(",", ":")) + "\n").encode())
+    finally:
+        os.close(fd)
+
+# Worker expects plain text protocol XML on stdout.
+sys.stdout.write(content if content.endswith("\n") else content + "\n")
+log(f"ok model={model} chars={len(content)} reasoning={reasoning or '-'} tokens={total_tokens}")
+PY
+exit $?
