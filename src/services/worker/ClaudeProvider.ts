@@ -27,10 +27,17 @@ import {
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
 import { ClassifiedProviderError } from './provider-errors.js';
-import { resolveTierAlias } from './model-aliases.js';
+import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
+import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired } from '../../shared/dependency-health.js';
-import { buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -569,25 +576,22 @@ export class ClaudeProvider {
     });
   }
 
-  /**
-   * One bounded, standalone SDK call that condenses an oversized tool payload.
-   *
-   * Runs as its own short-lived query with `maxTurns: 1` rather than as a turn
-   * in the observer conversation: adding it there would grow the very
-   * conversation the recycle logic exists to bound.
-   */
-  private async compressField(
-    text: string,
-    budgetChars: number,
-    session: ActiveSession,
+  /** One bounded, standalone SDK call on the same Observer provider path. */
+  private async runStandaloneObserverPrompt(
+    prompt: string,
+    context: {
+      sessionDbId: number;
+      contentSessionId: string;
+      project: string;
+      signals?: AbortSignal[];
+    },
     modelId: string,
     claudePath: string,
-    signal: AbortSignal,
   ): Promise<string | null> {
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
     const controller = new AbortController();
     const abort = () => controller.abort();
-    const signals = [signal, session.abortController.signal];
+    const signals = context.signals ?? [];
     for (const source of signals) {
       source.addEventListener('abort', abort, { once: true });
       if (source.aborted) abort();
@@ -595,13 +599,13 @@ export class ClaudeProvider {
     try {
       if (controller.signal.aborted) return null;
       const result = query({
-        prompt: buildFieldCompressionPrompt(text, budgetChars),
+        prompt,
         options: {
           ...buildHardenedSdkOptions({
             source: 'Observer',
-            sessionDbId: session.sessionDbId,
-            contentSessionId: session.contentSessionId,
-            project: session.project,
+            sessionDbId: context.sessionDbId,
+            contentSessionId: context.contentSessionId,
+            project: context.project,
             model: modelId,
             env: isolatedEnv,
             pathToClaudeCodeExecutable: claudePath,
@@ -624,6 +628,48 @@ export class ClaudeProvider {
     } finally {
       for (const source of signals) source.removeEventListener('abort', abort);
     }
+  }
+
+  private async compressField(
+    text: string,
+    budgetChars: number,
+    session: ActiveSession,
+    modelId: string,
+    claudePath: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    return this.runStandaloneObserverPrompt(
+      buildFieldCompressionPrompt(text, budgetChars),
+      {
+        sessionDbId: session.sessionDbId,
+        contentSessionId: session.contentSessionId,
+        project: session.project,
+        signals: [signal, session.abortController.signal],
+      },
+      modelId,
+      claudePath,
+    );
+  }
+
+  /** Format a stored summary through the same hardened Claude SDK path as summaries. */
+  async formatTelegramWrapup(
+    input: TelegramWrapupFormatterInput,
+    activeModelId?: string,
+  ): Promise<string> {
+    const claudePath = findClaudeExecutable('SDK');
+    const modelId = activeModelId ?? this.getSummaryModelId();
+    const text = await this.runStandaloneObserverPrompt(
+      buildTelegramWrapupPrompt(input.summaryText),
+      input,
+      modelId,
+      claudePath,
+    );
+    if (!text?.trim()) {
+      const error = new Error('Claude returned no text for the Telegram wrap-up');
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model: modelId }, error);
+      throw error;
+    }
+    return text;
   }
 
   private async *createMessageGenerator(
@@ -735,5 +781,10 @@ export class ClaudeProvider {
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
     // Resolve $TIER:<fast|smart|simple|summary> aliases at request time (#2289).
     return resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings);
+  }
+
+  private getSummaryModelId(): string {
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    return resolveSummaryTierModel(resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings), settings);
   }
 }

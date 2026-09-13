@@ -54,6 +54,7 @@ import {
   tryAdmitQuotaProbe,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../../shared/quota-cooldown.js';
+import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -105,6 +106,7 @@ export class SessionRoutes extends BaseRouteHandler {
     private completionHandler: SessionCompletionHandler,
   ) {
     super();
+    this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
   }
 
   private selectRuntimeProvider(): {
@@ -119,6 +121,31 @@ export class SessionRoutes extends BaseRouteHandler {
     }
     return selectProviderForGenerator();
   }
+
+  private formatTelegramWrapup = async (input: TelegramWrapupFormatterInput): Promise<string> => {
+    const activeSession = this.sessionManager.getSession(input.sessionDbId);
+    const selection = activeSession?.currentProvider
+      ? { provider: activeSession.currentProvider, gatewayProbeClaimId: null }
+      : this.selectRuntimeProvider();
+    const activeModelId = activeSession?.currentProvider ? activeSession.lastModelId : undefined;
+
+    try {
+      switch (selection.provider) {
+        case 'gemini':
+          return await this.geminiAgent.formatTelegramWrapup(input, activeModelId);
+        case 'openrouter':
+          return await this.openRouterAgent.formatTelegramWrapup(input, activeModelId);
+        case 'codex':
+          return await this.codexAgent.formatTelegramWrapup(input, activeModelId);
+        case 'grok':
+          return await this.grokAgent.formatTelegramWrapup(input, activeModelId);
+        default:
+          return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
+      }
+    } finally {
+      releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+    }
+  };
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const priorTail = this.ensureGeneratorLocks.get(sessionDbId) ?? Promise.resolve();

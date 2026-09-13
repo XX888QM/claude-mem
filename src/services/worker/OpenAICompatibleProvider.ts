@@ -4,12 +4,19 @@ import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { buildInitPrompt, buildObservationBatchPrompt, buildSummaryPrompt, buildContinuationPrompt } from '../../sdk/prompts.js';
-import { buildFieldCompressionPrompt } from './field-optimizer.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt } from './field-optimizer.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import {
+  shouldRecycleConversation,
+  conversationChars,
+  resolveConversationMaxChars,
+} from '../../shared/observer-recycle.js';
+import { recycleObserverConversation, loadSessionStartContext } from './session/recycle-conversation.js';
+import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import {
   processAgentResponse,
   snapshotResponseContext,
@@ -42,7 +49,7 @@ export interface ProviderQueryResult {
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
-export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string }> {
+export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string; model: string; plainText?: boolean }> {
   protected dbManager: DatabaseManager;
   protected sessionManager: SessionManager;
 
@@ -89,6 +96,30 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       config,
     );
     return result.content || null;
+  }
+
+  /** Format a stored summary through this provider's normal summary-model query path. */
+  async formatTelegramWrapup(
+    input: TelegramWrapupFormatterInput,
+    activeModelId?: string,
+  ): Promise<string> {
+    const config = this.getConfig();
+    if (!config.apiKey) {
+      throw this.missingApiKeyError();
+    }
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const model = resolveSummaryTierModel(activeModelId ?? config.model, settings);
+    const summaryConfig = { ...config, model, plainText: true };
+    const result = await this.query(
+      [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
+      summaryConfig,
+    );
+    if (!result.content?.trim()) {
+      const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
+      logger.error('TELEGRAM', error.message, { sessionId: input.sessionDbId, model }, error);
+      throw error;
+    }
+    return result.content;
   }
 
   /** Estimate token count for a single message body. */
