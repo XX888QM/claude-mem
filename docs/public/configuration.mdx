@@ -204,10 +204,10 @@ The host setting and the token work as a pair:
 |---|---|---|
 | `127.0.0.1` (default) | empty | Today. Nothing reachable off-box. **Recommended for everyone not using the TV remotely.** |
 | `127.0.0.1` | set | Token is inert — nothing can reach the port anyway. Harmless. |
-| `0.0.0.0` | **empty** | **Dangerous, and unchanged from today**: the full API — settings incl. provider API keys, deletes, import, better-auth — is on the LAN. This is what the Docker setup already tells people to do, so the worker warns rather than refuses to bind. |
+| `0.0.0.0` | **empty** | This local fork denies every remote request. Direct loopback access remains available. |
 | `0.0.0.0` | set | The point of the feature. LAN devices reach `/tv`, `/tv.html`, `/stream`, `GET /api/observations` with the secret, and get 404/403/401 for everything else. |
 
-Booting with a non-loopback host and no token logs a `SECURITY` warning; the worker still binds.
+Booting with a non-loopback host and no token logs a `SECURITY` warning; the worker still binds but the always-mounted guard denies remote requests.
 
 **A local port-forward reopens the whole API.** The guard exempts loopback by socket peer, so anything that arrives *as* loopback bypasses it entirely — including `ssh -L <port>:127.0.0.1:<port> <box>` from another device, or any local forwarding proxy. To the worker that traffic is indistinguishable from the operator's own browser, so it gets the full API, `GET /api/settings` and its provider API keys included. This is the one concrete way "the device can do nothing else" stops being true: only forward the port to devices you would hand the machine to.
 

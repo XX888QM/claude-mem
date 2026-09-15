@@ -83,6 +83,7 @@ describe('DataRoutes Type Coercion', () => {
 
     const mockDbManager = {
       getSessionStore: () => ({
+        db: { prepare: () => ({ all: () => [] }) },
         getObservationsByIds: mockGetObservationsByIds,
         getSdkSessionsBySessionIds: mockGetSdkSessionsBySessionIds,
       }),

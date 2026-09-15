@@ -570,7 +570,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_tool_uses',
-    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response. Pass tool_use_ids returned by get_observations, not observation IDs. Older observations may have no raw references. Payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -846,7 +846,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'prime_corpus',
-    description: 'Prime a knowledge corpus — creates an AI session loaded with the corpus knowledge. Must be called before query_corpus.',
+    description: 'Prime a knowledge corpus using a separate logged-in Claude session. Prefer get_corpus for direct reading without extra model calls.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -859,6 +859,25 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
       return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
+    }
+  },
+  {
+    name: 'get_corpus',
+    description: 'Read a knowledge corpus directly, newest records first. No priming or separate Claude login needed. Answer from these historical records, cite IDs, and page as needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Corpus name from list_corpora' },
+        offset: { type: 'integer', minimum: 0, default: 0 },
+        limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      const { name, offset, limit } = args;
+      if (typeof name !== 'string' || !name.trim()) throw new Error('Missing required argument: name');
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/observations`, { query: { offset, limit }, text: true });
     }
   },
   {

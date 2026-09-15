@@ -147,6 +147,9 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   const hooksJson: CursorHooksJson = {
     version: 1,
     hooks: {
+      sessionStart: [
+        { command: makeHookCommand('context') }
+      ],
       beforeSubmitPrompt: [
         { command: makeHookCommand('session-init') },
         { command: makeHookCommand('context') }

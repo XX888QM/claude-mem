@@ -92,6 +92,7 @@ export const codexAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse: r.tool_response,
+      toolUseId: stringOrUndefined(r.tool_use_id) ?? stringOrUndefined(r.tool_call_id),
       transcriptPath: stringOrUndefined(r.transcript_path),
       lastAssistantMessage: stringOrUndefined(r.last_assistant_message),
       turnId: stringOrUndefined(r.turn_id),

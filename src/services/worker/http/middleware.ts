@@ -111,7 +111,7 @@ export function requireLocalhost(req: Request, res: Response, next: NextFunction
 // ---------------------------------------------------------------------------
 
 export interface RemoteReadOnlyOptions {
-  /** Called per request. Empty string ⇒ this guard should never have been mounted. */
+  /** Called per request. Empty string denies every remote request. */
   getToken: () => string;
 }
 
@@ -163,8 +163,7 @@ export type RemoteAccessDecision =
 /**
  * The whole policy, as a pure function so it can be unit-tested without a
  * second network interface. The middleware below is a thin adapter over it.
- * An empty `expectedToken` denies everything — the guard should not be
- * mounted at all in that case, but it must fail closed if it is.
+ * An empty `expectedToken` denies everything remote (loopback is handled first).
  */
 export function decideRemoteAccess(input: {
   method: string;

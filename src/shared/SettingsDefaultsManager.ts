@@ -104,8 +104,8 @@ export interface SettingsDefaults {
   // (#3618). Defaults: 40 ops / 90s (hub projection lease).
   CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: string;
   CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: string;
-  // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-  // mounted and the worker behaves exactly as before. Set (with a non-loopback
+  // Observation TV remote broadcast. EMPTY = remote requests denied.
+  // Direct loopback remains available. Set (with a non-loopback
   // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
   // GET /api/observations to holders of this secret. Mint with:
   //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
@@ -135,9 +135,6 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: string;
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
-  // CCS Align (Worker Watch seat, Phase 0 breathing slice). Seat-owned middle
-  // cache under ~/.claude-mem/ccs-align/<viewerId>/; pull-only, never a second
-  // writer on LFG/Orifice logs. See plans/2026-09-09-ccs-align.md.
   CLAUDE_MEM_CCS_ALIGN_ENABLED: string;
   CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: string;
   CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: string;
@@ -245,8 +242,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CLOUD_SYNC_WS: 'true',  // Advisory WebSocket speed layer (plan Phase 4). 'false' = HTTP polling only — sync stays fully correct, just poll-latency (prime directive #2)
     CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE: '40',  // Drain page size; 200-op content pushes timed out under hub projection_busy
     CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS: '90000',  // Content-push AbortSignal; matches hub PROJECTION_LEASE_MS (90s)
-    // Observation TV remote broadcast. EMPTY = OFF: the read-only guard is not
-    // mounted and the worker behaves exactly as before. Set (with a non-loopback
+    // Observation TV remote broadcast. EMPTY = remote requests denied.
+    // Direct loopback remains available. Set (with a non-loopback
     // CLAUDE_MEM_WORKER_HOST) to expose ONLY /tv, /tv.html, /stream and
     // GET /api/observations to holders of this secret. Mint with:
     //   node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
@@ -274,9 +271,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: '',
     CLAUDE_MEM_CCS_ALIGN_ENABLED: 'false',
     CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS: '',
-    // Copy of the Grok needle list (D6). Same episodic needles, seat-owned cache.
     CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES: 'decision,bugfix,security_alert,sensitive',
-    // Phase 2 rules-shadow patch stays a Prioritizer flag, not a silent /do (D8).
     CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS: 'false',
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_REDIS_URL: '',

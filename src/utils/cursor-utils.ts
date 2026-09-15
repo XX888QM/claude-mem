@@ -1,5 +1,6 @@
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, lstatSync, unlinkSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'path';
 import { logger } from './logger.js';
 import { toBmpSafe } from './bmp-safe.js';
@@ -61,10 +62,27 @@ export function unregisterCursorProject(registryFile: string, projectName: strin
   }
 }
 
+function contextRulesDir(workspacePath: string): string {
+  for (const dir of [join(workspacePath, '.cursor'), join(workspacePath, '.cursor', 'rules')]) {
+    if (existsSync(dir) && (lstatSync(dir).isSymbolicLink() || !lstatSync(dir).isDirectory())) {
+      throw new Error('Memory rules directory must not be a symlink or file');
+    }
+  }
+  return join(workspacePath, '.cursor', 'rules');
+}
+
+export function clearContextFile(workspacePath: string): void {
+  const rulesFile = join(contextRulesDir(workspacePath), 'claude-mem-context.mdc');
+  if (!existsSync(rulesFile) || lstatSync(rulesFile).isSymbolicLink()) return;
+  if (readFileSync(rulesFile, 'utf8').startsWith('---\nalwaysApply: true\ndescription: "Claude-mem context from past sessions (auto-updated)"\n---')) {
+    unlinkSync(rulesFile);
+  }
+}
+
 export function writeContextFile(workspacePath: string, context: string): void {
-  const rulesDir = join(workspacePath, '.cursor', 'rules');
+  const rulesDir = contextRulesDir(workspacePath);
   const rulesFile = join(rulesDir, 'claude-mem-context.mdc');
-  const tempFile = `${rulesFile}.tmp`;
+  const tempFile = `${rulesFile}.${randomUUID()}.tmp`;
 
   mkdirSync(rulesDir, { recursive: true });
 
@@ -83,8 +101,12 @@ ${toBmpSafe(context)}
 *Updated after last session. Use claude-mem's MCP search tools for more detailed queries.*
 `;
 
-  writeFileSync(tempFile, content);
-  renameSync(tempFile, rulesFile);
+  try {
+    writeFileSync(tempFile, content, { flag: 'wx', mode: 0o600 });
+    renameSync(tempFile, rulesFile);
+  } finally {
+    if (existsSync(tempFile)) unlinkSync(tempFile);
+  }
 }
 
 export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: string): void {

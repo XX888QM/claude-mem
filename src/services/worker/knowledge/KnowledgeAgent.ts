@@ -52,11 +52,12 @@ export class KnowledgeAgent {
     });
 
     let sessionId: string | undefined;
+    let succeeded = false;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) sessionId = msg.session_id;
         if (msg.type === 'result') {
-          logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
+          succeeded = msg.subtype === 'success' && !msg.is_error;
         }
       }
     } catch (error) {
@@ -71,8 +72,8 @@ export class KnowledgeAgent {
       }
     }
 
-    if (!sessionId) {
-      throw new Error(`Failed to capture session_id while priming corpus "${corpus.name}"`);
+    if (!sessionId || !succeeded) {
+      throw new Error('Knowledge priming failed. Check Claude login and worker logs, or use get_corpus without a separate model session.');
     }
 
     corpus.session_id = sessionId;
@@ -145,10 +146,12 @@ export class KnowledgeAgent {
     });
 
     let answer = '';
+    let succeeded = false;
     let newSessionId = corpus.session_id!;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) newSessionId = msg.session_id;
+        if (msg.type === 'result') succeeded = msg.subtype === 'success' && !msg.is_error;
         if (msg.type === 'assistant') {
           const text = msg.message.content
             .filter((b: any) => b.type === 'text')
@@ -169,6 +172,9 @@ export class KnowledgeAgent {
       }
     }
 
+    if (!succeeded || !answer.trim()) {
+      throw new Error('Knowledge query failed. Check Claude login and worker logs, or use get_corpus to read saved records directly.');
+    }
     return { answer, session_id: newSessionId };
   }
 

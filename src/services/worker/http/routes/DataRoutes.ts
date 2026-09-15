@@ -202,7 +202,94 @@ export class DataRoutes extends BaseRouteHandler {
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
 
-    res.json(observations);
+    const toolIds = new Map<number, number[]>();
+    if (observations.length > 0) {
+      const rows = store.db.prepare(`
+        SELECT id, observation_id FROM tool_uses
+        WHERE observation_id IN (${observations.map(() => '?').join(',')})
+        ORDER BY id
+      `).all(...observations.map(observation => observation.id)) as { id: number; observation_id: number }[];
+      for (const row of rows) {
+        const linked = toolIds.get(row.observation_id) ?? [];
+        linked.push(row.id);
+        toolIds.set(row.observation_id, linked);
+      }
+    }
+    res.json(observations.map(observation => ({
+      ...observation,
+      tool_use_ids: toolIds.get(observation.id) ?? [],
+    })));
+  });
+
+  /**
+   * Index/tally listing for `tool_uses` — Receipt's read path and the way a
+   * caller finds ids worth disclosing. Deliberately projects a CHEAP shape:
+   * identity + sizes, never `tool_input` / `tool_response`. Full bodies come
+   * only from POST /api/tool-uses/batch with explicit ids.
+   */
+  private handleListToolUses = this.wrapHandler((req: Request, res: Response): void => {
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+    const asNumber = (value: unknown): number | undefined => {
+      const parsed = Number(asString(value));
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+
+    const toolName = asString(req.query.tool_name ?? req.query.toolName);
+
+    const rows = store.queryToolUses({
+      project: asString(req.query.project),
+      contentSessionId: asString(req.query.session ?? req.query.contentSessionId),
+      memorySessionId: asString(req.query.memorySessionId),
+      toolName: toolName ? toolName.split(',').map(part => part.trim()).filter(Boolean) : undefined,
+      agentId: asString(req.query.agentId),
+      platformSource,
+      dateStart: asNumber(req.query.dateStart),
+      dateEnd: asNumber(req.query.dateEnd),
+      limit: asNumber(req.query.limit),
+      offset: asNumber(req.query.offset),
+      orderBy: req.query.orderBy === 'date_asc' ? 'date_asc' : 'date_desc',
+    });
+
+    res.json({
+      count: rows.length,
+      toolUses: rows.map(row => ({
+        id: row.id,
+        tool_use_id: row.tool_use_id,
+        tool_name: row.tool_name,
+        project: row.project,
+        content_session_id: row.content_session_id,
+        memory_session_id: row.memory_session_id,
+        platform_source: row.platform_source,
+        agent_id: row.agent_id,
+        agent_type: row.agent_type,
+        observation_id: row.observation_id,
+        or_generation_id: row.or_generation_id,
+        or_session_id: row.or_session_id,
+        prompt_number: row.prompt_number,
+        created_at: row.created_at,
+        created_at_epoch: row.created_at_epoch,
+        // Size hints so a caller can budget tokens before disclosing a body.
+        tool_input_bytes: row.tool_input ? Buffer.byteLength(row.tool_input, 'utf8') : 0,
+        tool_response_bytes: row.tool_response ? Buffer.byteLength(row.tool_response, 'utf8') : 0,
+      })),
+    });
+  });
+
+  private handleGetToolUsesByIds = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids, limit, project, contentSessionId } = req.body as z.infer<typeof toolUsesBatchSchema>;
+
+    if (ids.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const store = this.dbManager.getSessionStore();
+    const platformSource = this.getOptionalPlatformSourceFromRequest(req);
+    res.json(store.getToolUsesByIds(ids, { limit, project, contentSessionId, platformSource }));
   });
 
   /**

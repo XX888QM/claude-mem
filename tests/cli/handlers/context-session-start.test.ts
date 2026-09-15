@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, it, mock } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { cursorAdapter } from '../../../src/cli/adapters/cursor.js';
 
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realOauthToken from '../../../src/shared/oauth-token.js';
@@ -17,9 +21,10 @@ const realProjectNameSnapshot = { ...realProjectName };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
+let excludedProjects = '';
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
-  loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false' }),
+  loadFromFileOnce: () => ({ CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'false', CLAUDE_MEM_EXCLUDED_PROJECTS: excludedProjects }),
 }));
 
 mock.module('../../../src/shared/oauth-token.js', () => ({ readStaleMarker: () => null }));
@@ -50,6 +55,21 @@ afterAll(() => {
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('delivers Cursor context and refreshes its always-applied rule', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'cursor-context-'));
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({ sessionId: 'context-test', cwd, platform: 'cursor' });
+      expect(cursorAdapter.formatOutput(result)).toEqual({ continue: true, additional_context: 'context from worker' });
+      expect(readFileSync(join(cwd, '.cursor/rules/claude-mem-context.mdc'), 'utf8')).toContain('context from worker');
+      excludedProjects = cwd;
+      await contextHandler.execute({ sessionId: 'context-test', cwd, platform: 'cursor' });
+      expect(existsSync(join(cwd, '.cursor/rules/claude-mem-context.mdc'))).toBe(false);
+    } finally {
+      excludedProjects = '';
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
   it('injects Codex context with one bounded worker startup and request', async () => {
     calls.length = 0;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');

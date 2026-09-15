@@ -35,7 +35,7 @@ import { captureEvent } from '../../../telemetry/telemetry.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
-import { CURSOR_SHADOW_REASON, isClaudeShadowOfCursor } from '../../../../shared/cursor-claude-shadow.js';
+import { CURSOR_SHADOW_REASON, isClaudeShadowOfCursor, resolveSummarizeTargetSessionDbId } from '../../../../shared/cursor-claude-shadow.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
   clearDependencyStatus,
@@ -564,15 +564,17 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    if (isClaudeShadowOfCursor(platformSource, store.hasSDKSession(contentSessionId, 'cursor'))) {
-      logger.info('HTTP', 'Skipping Claude Code summarize that duplicates an existing Cursor session', {
+    const { sessionDbId, reusedCursorTwin } = resolveSummarizeTargetSessionDbId(
+      platformSource,
+      store.getSDKSessionId(contentSessionId, 'cursor'),
+      () => store.createSDKSession(contentSessionId, '', '', undefined, platformSource),
+    );
+    if (reusedCursorTwin) {
+      logger.info('HTTP', 'Routing Claude Code summarize onto existing Cursor session', {
         contentSessionId,
+        sessionDbId,
       });
-      res.json({ status: 'skipped', reason: CURSOR_SHADOW_REASON });
-      return;
     }
-
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
     const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
 
     const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -723,8 +725,8 @@ export class SessionRoutes extends BaseRouteHandler {
     store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
-    // saved prompt nudges — including cursor sessions, which skip the
-    // non-cursor branch below entirely.
+    // saved prompt nudges — including cursor sessions, which skip observer
+    // spawn below.
     this.dbManager.getCloudSync()?.notify();
 
     const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
@@ -735,50 +737,13 @@ export class SessionRoutes extends BaseRouteHandler {
       contextInjected
     });
 
+    // Viewer SSE + Chroma must run for every host, including Cursor.
+    // Cursor only skips spawning the observer SDK on prompt submit.
+    this.publishSavedUserPrompt(contentSessionId, sessionDbId);
+
     if (platformSource !== 'cursor') {
       const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
-
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
-
-      if (latestPrompt) {
-        this.eventBroadcaster.broadcastNewPrompt({
-          id: latestPrompt.id,
-          content_session_id: latestPrompt.content_session_id,
-          project: latestPrompt.project,
-          platform_source: latestPrompt.platform_source,
-          prompt_number: latestPrompt.prompt_number,
-          prompt_text: latestPrompt.prompt_text,
-          created_at_epoch: latestPrompt.created_at_epoch
-        });
-
-        const chromaStart = Date.now();
-        const promptText = latestPrompt.prompt_text;
-        this.dbManager.getChromaSync()?.syncUserPrompt(
-          latestPrompt.id,
-          latestPrompt.memory_session_id,
-          latestPrompt.project,
-          promptText,
-          latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch,
-          latestPrompt.platform_source
-        ).then(() => {
-          const chromaDuration = Date.now() - chromaStart;
-          const truncatedPrompt = promptText.length > 60
-            ? promptText.substring(0, 60) + '...'
-            : promptText;
-          logger.debug('CHROMA', 'User prompt synced', {
-            promptId: latestPrompt.id,
-            duration: `${chromaDuration}ms`,
-            prompt: truncatedPrompt
-          });
-        }).catch((error) => {
-          logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-            promptId: latestPrompt.id,
-            prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
-          }, error);
-        });
-      }
 
       await this.ensureGeneratorRunning(sessionDbId, 'init');
 
@@ -795,6 +760,54 @@ export class SessionRoutes extends BaseRouteHandler {
       status: 'initialized'
     });
   });
+
+  private publishSavedUserPrompt(contentSessionId: string, sessionDbId: number): void {
+    const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(contentSessionId, sessionDbId);
+    if (!latestPrompt) {
+      logger.warn('HTTP', 'session-init: saved prompt missing from read-back, skipping Viewer broadcast', {
+        contentSessionId,
+        sessionDbId,
+      });
+      return;
+    }
+
+    this.eventBroadcaster.broadcastNewPrompt({
+      id: latestPrompt.id,
+      content_session_id: latestPrompt.content_session_id,
+      project: latestPrompt.project,
+      platform_source: latestPrompt.platform_source,
+      prompt_number: latestPrompt.prompt_number,
+      prompt_text: latestPrompt.prompt_text,
+      created_at_epoch: latestPrompt.created_at_epoch
+    });
+
+    const chromaStart = Date.now();
+    const promptText = latestPrompt.prompt_text;
+    this.dbManager.getChromaSync()?.syncUserPrompt(
+      latestPrompt.id,
+      latestPrompt.memory_session_id,
+      latestPrompt.project,
+      promptText,
+      latestPrompt.prompt_number,
+      latestPrompt.created_at_epoch,
+      latestPrompt.platform_source
+    ).then(() => {
+      const chromaDuration = Date.now() - chromaStart;
+      const truncatedPrompt = promptText.length > 60
+        ? promptText.substring(0, 60) + '...'
+        : promptText;
+      logger.debug('CHROMA', 'User prompt synced', {
+        promptId: latestPrompt.id,
+        duration: `${chromaDuration}ms`,
+        prompt: truncatedPrompt
+      });
+    }).catch((error) => {
+      logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
+        promptId: latestPrompt.id,
+        prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
+      }, error);
+    });
+  }
 
   private static readonly SIMPLE_TOOLS = new Set([
     'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'

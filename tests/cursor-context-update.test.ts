@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { writeContextFile } from '../src/utils/cursor-utils';
+import { clearContextFile, writeContextFile } from '../src/utils/cursor-utils';
 
 // Read-back helper for verifying writeContextFile output.
 function readContextFile(workspacePath: string): string | null {
@@ -30,6 +30,17 @@ describe('Cursor Context Update', () => {
   });
 
   describe('writeContextFile', () => {
+    it('rejects a symlinked rules directory and preserves a user-owned file on clear', () => {
+      mkdirSync(join(workspacePath, '.cursor'));
+      symlinkSync(tempDir, join(workspacePath, '.cursor', 'rules'));
+      expect(() => writeContextFile(workspacePath, 'private memory')).toThrow('symlink');
+      rmSync(join(workspacePath, '.cursor', 'rules'));
+      mkdirSync(join(workspacePath, '.cursor', 'rules'));
+      const file = join(workspacePath, '.cursor/rules/claude-mem-context.mdc');
+      writeFileSync(file, 'user instructions');
+      clearContextFile(workspacePath);
+      expect(readFileSync(file, 'utf8')).toBe('user instructions');
+    });
     it('creates .cursor/rules directory structure', () => {
       writeContextFile(workspacePath, 'test context');
 

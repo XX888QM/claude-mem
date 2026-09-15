@@ -459,7 +459,7 @@ export class WorkerService implements WorkerRef {
       // CLAUDE_MEM_WORKER_HOST=0.0.0.0, and refusing would break that install.
       logger.warn(
         'SECURITY',
-        'Worker bound to a non-loopback host with no CLAUDE_MEM_TV_TOKEN — the full worker API, including provider API keys via GET /api/settings, is reachable from the network',
+        'Worker bound to a non-loopback host with no CLAUDE_MEM_TV_TOKEN — remote requests are denied; loopback remains available',
         { host }
       );
     }

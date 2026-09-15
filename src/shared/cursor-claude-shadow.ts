@@ -9,6 +9,22 @@ export function isClaudeShadowOfCursor(
   return normalizePlatformSource(platformSource) === 'claude' && hasCursorTwin;
 }
 
+/**
+ * Cursor's Claude-compat Stop hook is the only summarize that actually
+ * arrives for many Cursor chats. Re-home it onto the existing CURSOR
+ * session instead of dropping it or opening a second CLAUDE card.
+ */
+export function resolveSummarizeTargetSessionDbId(
+  platformSource: string | undefined | null,
+  cursorSessionDbId: number | null,
+  createOwn: () => number,
+): { sessionDbId: number; reusedCursorTwin: boolean } {
+  if (cursorSessionDbId != null && isClaudeShadowOfCursor(platformSource, true)) {
+    return { sessionDbId: cursorSessionDbId, reusedCursorTwin: true };
+  }
+  return { sessionDbId: createOwn(), reusedCursorTwin: false };
+}
+
 export function looksLikeCursorNativeHookPayload(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return false;
   const r = raw as Record<string, unknown>;

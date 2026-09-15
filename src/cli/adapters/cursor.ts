@@ -58,6 +58,11 @@ export const cursorAdapter: PlatformAdapter = {
     };
   },
   formatOutput(result) {
-    return { continue: result.continue ?? true };
+    return {
+      continue: result.continue ?? true,
+      ...(result.hookSpecificOutput?.additionalContext
+        ? { additional_context: result.hookSpecificOutput.additionalContext }
+        : {}),
+    };
   }
 };

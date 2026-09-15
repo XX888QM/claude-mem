@@ -2602,7 +2602,7 @@ export class SessionStore {
     return (stmt.get(...params) as SummaryDetailRow | null) || null;
   }
 
-  hasSDKSession(contentSessionId: string, platformSource: string): boolean {
+  getSDKSessionId(contentSessionId: string, platformSource: string): number | null {
     const normalizedPlatformSource = normalizePlatformSource(platformSource);
     const row = this.db.prepare(`
       SELECT id
@@ -2610,7 +2610,11 @@ export class SessionStore {
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ?
         AND content_session_id = ?
     `).get(DEFAULT_PLATFORM_SOURCE, normalizedPlatformSource, contentSessionId) as { id: number } | null | undefined;
-    return row != null;
+    return row?.id ?? null;
+  }
+
+  hasSDKSession(contentSessionId: string, platformSource: string): boolean {
+    return this.getSDKSessionId(contentSessionId, platformSource) != null;
   }
 
   getSessionById(id: number): SdkSessionDetailRow | null {

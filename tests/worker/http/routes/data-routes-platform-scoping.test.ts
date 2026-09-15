@@ -238,6 +238,31 @@ describe('DataRoutes platform-scoped hydration', () => {
     });
   });
 
+  it('returns scoped raw tool references that can be disclosed by the next step', () => {
+    const ids = seedPlatformRows();
+    const rawId = store.upsertToolUse({
+      toolUseId: 'scope-raw', contentSessionId, project,
+      platformSource: 'cursor', toolName: 'Read', toolResponse: 'raw evidence',
+    });
+    store.linkToolUsesToObservation({
+      contentSessionId, toolUseIds: ['scope-raw'], observationId: ids.cursorObservationId,
+    });
+    const response = makeResponse();
+    captureRoute(routes, 'post', '/api/observations/batch')(makeRequest({
+      body: { ids: [ids.claudeObservationId, ids.cursorObservationId], platformSource: 'cursor' },
+    }), response.res);
+    expect(response.json).toHaveBeenCalledWith([
+      expect.objectContaining({ id: ids.cursorObservationId, tool_use_ids: [rawId] }),
+    ]);
+    const raw = makeResponse();
+    captureRoute(routes, 'post', '/api/tool-uses/batch')(makeRequest({
+      body: { ids: [rawId], project, platformSource: 'cursor' },
+    }), raw.res);
+    expect(raw.json).toHaveBeenCalledWith([
+      expect.objectContaining({ id: rawId, tool_response: 'raw evidence' }),
+    ]);
+  });
+
   it('scopes single observation lookup by requested platform', () => {
     const ids = seedPlatformRows();
     const handler = captureRoute(routes, 'get', '/api/observation/:id');

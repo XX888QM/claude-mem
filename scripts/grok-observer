@@ -63,6 +63,8 @@ if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
 fi
 
 # Direct API path — no session created.
+# Apple's /usr/bin/python3 is an Xcode stub and exits 69 when the license is stale.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 export PROMPT_FILE MODEL REASONING AUTH_JSON OUTPUT_FORMAT TOKEN_LOG REAL_HOME REAL_GROK
 python3 - <<'PY'
 import fcntl, json, os, subprocess, sys, time, urllib.error, urllib.request

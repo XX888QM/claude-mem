@@ -17,6 +17,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { clearContextFile, writeContextFile } from '../../utils/cursor-utils.js';
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
@@ -26,6 +27,15 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
+      if (input.platform === 'cursor') {
+        try {
+          clearContextFile(cwd);
+        } catch (error) {
+          logger.warn('HOOK', 'Could not remove excluded project memory rule', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       return {
         hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
         exitCode: HOOK_EXIT_CODES.SUCCESS,
@@ -94,6 +104,18 @@ export const contextHandler: EventHandler = {
     }
 
     const platform = input.platform;
+
+    // Cursor reads this rule before prompts.
+    // Keep the existing file fallback for hosts that ignore hook stdout.
+    if (platform === 'cursor' && additionalContext) {
+      try {
+        writeContextFile(cwd, additionalContext);
+      } catch (error) {
+        logger.warn('HOOK', 'Could not refresh memory context rule', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
