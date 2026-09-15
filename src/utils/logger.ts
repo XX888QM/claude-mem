@@ -44,6 +44,7 @@ export function pruneOldRuntimeLogs(
 
 export type Component =
   | 'AGENTS_MD'
+  | 'AWARENESS'
   | 'BRANCH'
   | 'CHROMA'
   | 'CHROMA_MCP'

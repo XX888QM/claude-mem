@@ -5,7 +5,14 @@ import {
   spawnSync,
   type SpawnSyncReturns,
 } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
 import { paths } from '../../shared/paths.js';
@@ -27,8 +34,39 @@ const REQUIRED_MARKETPLACE_FILES = [
   path.join('plugin', 'skills', 'mem-search', 'SKILL.md'),
 ];
 const WINDOWS_CODEX_EXTENSIONS = new Set(['.cmd', '.exe', '.bat', '.com']);
+const MACOS_CODEX_BUNDLE_PATHS = [
+  '/Applications/ChatGPT.app/Contents/Resources/codex',
+  '/Applications/Codex.app/Contents/Resources/codex',
+];
+
+export function isExecutableFile(
+  candidate: string,
+  access: (path: string, mode: number) => void = accessSync,
+): boolean {
+  try {
+    access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isUsableCodexBundle(
+  candidate: string,
+  probe: typeof spawnSync = spawnSync,
+): boolean {
+  const result = probe(candidate, ['--version'], {
+    stdio: 'ignore',
+    windowsHide: true,
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  });
+  return !result.error && result.status === 0;
+}
 
 function commandExists(command: string): boolean {
+  if (path.isAbsolute(command)) return isExecutableFile(command);
+
   try {
     if (process.platform === 'win32') {
       execFileSync('where.exe', [command], { stdio: 'ignore', windowsHide: true });
@@ -110,6 +148,14 @@ function lookupCodexOnWindows(): string | null {
     ?? null;
 }
 
+export function lookupCodexOnMacOS(
+  commandInPath: (command: string) => boolean = commandExists,
+  candidateAvailable: (candidate: string) => boolean = isUsableCodexBundle,
+): string | null {
+  if (commandInPath('codex')) return 'codex';
+  return MACOS_CODEX_BUNDLE_PATHS.find((candidate) => candidateAvailable(candidate)) ?? null;
+}
+
 function lookupCodexOnPosix(): string | null {
   // Explicit override first (mirrors GROK_PATH for daemon installs).
   for (const envKey of ['CODEX_PATH', 'CLAUDE_MEM_CODEX_PATH']) {
@@ -134,10 +180,9 @@ function lookupCodexOnPosix(): string | null {
     if (existsSync(candidate)) return candidate;
   }
 
-  // The ChatGPT.app binary is a valid last-resort fallback, but some
-  // sandboxed/daemon launch contexts cannot spawn app-bundled executables
-  // even when the file exists. Prefer a PATH/npm CLI first so observation
-  // subprocesses do not fail with a misleading ENOENT.
+  // Official macOS bundle probe, then a last-resort exists() fallback.
+  const fromOfficialMacOS = lookupCodexOnMacOS();
+  if (fromOfficialMacOS) return fromOfficialMacOS;
   const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex';
   if (process.platform === 'darwin' && existsSync(desktopCodex)) return desktopCodex;
 
@@ -148,9 +193,11 @@ export function resolveCodexCommand(
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
   posixLookup: () => string | null = lookupCodexOnPosix,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
 ): string {
-  if (platform !== 'win32') return posixLookup() ?? 'codex';
-  return windowsLookup() ?? 'codex.cmd';
+  if (platform === 'win32') return windowsLookup() ?? 'codex.cmd';
+  if (platform === 'darwin') return posixLookup() ?? macOSLookup() ?? 'codex';
+  return posixLookup() ?? 'codex';
 }
 
 export function resolveCodexSpawnInvocation(
@@ -158,8 +205,9 @@ export function resolveCodexSpawnInvocation(
   platform: NodeJS.Platform = process.platform,
   windowsLookup: () => string | null = lookupCodexOnWindows,
   posixLookup: () => string | null = lookupCodexOnPosix,
+  macOSLookup: () => string | null = lookupCodexOnMacOS,
 ): SpawnSyncInvocation {
-  const resolvedCommand = resolveCodexCommand(platform, windowsLookup, posixLookup);
+  const resolvedCommand = resolveCodexCommand(platform, windowsLookup, posixLookup, macOSLookup);
   return buildSpawnSyncInvocation(resolvedCommand, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -469,7 +517,7 @@ const cleanupLegacyCodexTranscriptAgentsContext = disableCodexTranscriptAgentsCo
 export async function installCodexCli(marketplaceRootOverride?: string): Promise<number> {
   console.log('\nInstalling Claude-Mem for Codex CLI (native hooks)...\n');
 
-  if (!commandExists('codex')) {
+  if (!commandExists(resolveCodexCommand())) {
     console.error('Codex CLI was not found on PATH.');
     console.error('Install Codex, then run: npx claude-mem@latest install');
     return 1;
@@ -508,7 +556,8 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Restart any running Codex sessions so native hooks are loaded
+  2. Review and trust the five claude-mem hooks when Codex prompts you
+  3. Restart sessions opened before trusting the hooks
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
@@ -530,7 +579,7 @@ export function uninstallCodexCli(): number {
   }
 
   try {
-    if (commandExists('codex')) {
+    if (commandExists(resolveCodexCommand())) {
       runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
     } else {
       console.log('  Codex CLI not found; skipping marketplace removal.');
