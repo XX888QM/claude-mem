@@ -59,6 +59,7 @@ export type Component =
   | 'ENV'
   | 'FOLDER_INDEX'
   | 'GIT'
+  | 'GROK_INDEX'
   | 'HOOK'
   | 'HTTP'
   | 'IMPORT'
