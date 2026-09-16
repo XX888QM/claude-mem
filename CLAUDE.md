@@ -21,6 +21,13 @@ git diff --stat HEAD...FETCH_HEAD
 # Cherry-pick a suitable complete official commit, or port only the reviewed files.
 ```
 
+## Known Pitfalls (learned the hard way)
+
+- **Codex plugin cache drifts silently.** `~/.codex/plugins/cache/claude-mem-local/claude-mem` is a full git-less copy of the plugin root, not a symlink. Matching version numbers or matching marketplace/Claude-cache hashes does NOT prove the Codex cache is in sync — diff `worker-service.cjs` (or hash it) against the Codex cache path specifically after every `build-and-sync`.
+- **`--process` queue-drain trigger returns 404.** The non-interactive force-process path hits `/api/queue`, which isn't implemented on the worker. Don't rely on it to force-drain a stuck queue; check worker health/logs instead.
+- **Never `git stash pop` onto the official-merge upgrade branch.** Doing this once produced massive both-modified conflicts across plugin metadata, docs, package.json version, worker/MCP services, HTTP middleware, and settings defaults. Follow the fetch-and-cherry-pick flow in "Repository Ownership" instead — never a blanket stash/merge of the whole official tree.
+- **When resolving merge conflicts, don't blanket-keep "ours."** Diff each contested hunk before discarding the official side — upstream security fixes (e.g. remote read-only token guard, TV empty-token deny) can look like noise in a conflict marker and get dropped by reflex.
+
 ## Local Runtime Overrides
 
 - Observer SDK subprocesses use `~/.claude-mem/observer-claude-config` as their private `CLAUDE_CONFIG_DIR` so internal sessions do not appear in CC Switch.
