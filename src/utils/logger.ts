@@ -118,8 +118,12 @@ class Logger {
   }
 
   private ensureLogFileInitialized(): void {
+    // Date is computed before the latch, so a long-lived process rolls onto a new
+    // log file at UTC midnight instead of writing today's lines into yesterday's file.
     const date = new Date().toISOString().split('T')[0];
     if (this.logFileInitialized && this.logFileDate === date) return;
+    this.logFileInitialized = true;
+    this.logFileDate = date;
 
     try {
       const logsDir = paths.logsDir();
