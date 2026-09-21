@@ -49,6 +49,7 @@ import { isClassified, describeProviderError } from '../../provider-errors.js';
 import { classifyClaudeError } from '../../ClaudeProvider.js';
 import { isSessionParkedForSlot } from '../../../../supervisor/process-registry.js';
 import { releaseCmemGatewayProbe, selectProviderForGenerator } from '../../provider-dispatch.js';
+import { isClaudeSubscriptionDisallowed } from '../../claude-quota-policy.js';
 import {
   getQuotaCooldown,
   tryAdmitQuotaProbe,
@@ -168,6 +169,15 @@ export class SessionRoutes extends BaseRouteHandler {
 
     const selection = this.selectRuntimeProvider();
     const selectedProvider = selection.provider;
+
+    if (selectedProvider === 'claude' && isClaudeSubscriptionDisallowed()) {
+      releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
+      logger.warn('SESSION', 'Refusing Claude SDK generator; Claude subscription quota is disabled', {
+        sessionId: sessionDbId,
+        source,
+      });
+      return;
+    }
 
     if (!session.generatorPromise) {
       if (selectedProvider === 'codex' && isCodexQuotaCooldownActive()) {

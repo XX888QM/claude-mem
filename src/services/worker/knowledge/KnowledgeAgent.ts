@@ -13,6 +13,7 @@ import { resolveTierAlias } from '../model-aliases.js';
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../../sdk/hardened-options.js';
+import { CLAUDE_QUOTA_DISABLED_MESSAGE, isClaudeSubscriptionDisallowed } from '../claude-quota-policy.js';
 
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;
@@ -24,6 +25,9 @@ export class KnowledgeAgent {
   }
 
   async prime(corpus: CorpusFile): Promise<string> {
+    if (isClaudeSubscriptionDisallowed()) {
+      throw new Error(CLAUDE_QUOTA_DISABLED_MESSAGE);
+    }
     const renderedCorpus = this.renderer.renderCorpus(corpus);
 
     const primePrompt = [
@@ -129,6 +133,9 @@ export class KnowledgeAgent {
   }
 
   private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
+    if (isClaudeSubscriptionDisallowed()) {
+      throw new Error(CLAUDE_QUOTA_DISABLED_MESSAGE);
+    }
     ensureDir(OBSERVER_SESSIONS_DIR);
     const claudePath = findClaudeExecutable('WORKER');
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());

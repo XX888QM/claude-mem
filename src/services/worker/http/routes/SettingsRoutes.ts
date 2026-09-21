@@ -13,6 +13,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { parseJsonWithBom, writeJsonFileAtomic } from '../../../../shared/atomic-json.js';
+import { isClaudeSubscriptionDisallowed } from '../../claude-quota-policy.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -203,6 +204,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'grok'];
       if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
         return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "grok"' };
+      }
+      if (settings.CLAUDE_MEM_PROVIDER === 'claude' && isClaudeSubscriptionDisallowed()) {
+        return { valid: false, error: 'Claude subscription quota is disabled' };
       }
     }
 
