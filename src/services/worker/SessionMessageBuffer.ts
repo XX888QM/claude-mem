@@ -2,7 +2,8 @@ import { EventEmitter } from 'events';
 import type { PendingMessage, PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
-export const SESSION_IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+export const IDLE_TIMEOUT_MS = 3 * 60 * 1000;
+export const SESSION_IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MS;
 
 interface BufferedMessage {
   id: number;

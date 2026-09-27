@@ -429,6 +429,10 @@ export class SessionManager {
       this.deliverSessionWrapupInBackground(sessionDbId);
     }
 
+    if (this.takeRequestedSessionWrapup(session)) {
+      this.deliverSessionWrapupInBackground(sessionDbId);
+    }
+
     this.buffer.dispose(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
