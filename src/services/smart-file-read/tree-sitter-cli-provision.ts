@@ -16,6 +16,12 @@ import { pinnedTreeSitterExecutableSha256 } from "./tree-sitter-cli-checksums.js
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
+/**
+ * Every provisioning error for a verified release executable that the OS
+ * cannot run contains this text; the installer error taxonomy matches on it.
+ */
+export const TREE_SITTER_CLI_CANNOT_RUN = "cannot run on this system";
+
 function treeSitterCliPackageDir(pluginRoot: string): string {
   return join(pluginRoot, "node_modules", "tree-sitter-cli");
 }
@@ -156,7 +162,7 @@ export async function ensureTreeSitterCliBinary(
   pluginRoot: string,
   installTimeoutMs: number,
   pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
-): Promise<void> {
+): Promise<"already-usable" | "release"> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
 
   const installScript = join(cliDir, "install.js");
@@ -169,7 +175,7 @@ export async function ensureTreeSitterCliBinary(
   const existingBinaryPath = finalExecutable;
   const version = String(JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8")).version);
   if (lstatSync(finalExecutable, { throwIfNoEntry: false })) assertRegularFile(finalExecutable);
-  if (await isTreeSitterCliBinaryUsable(pluginRoot, pinnedSha256ForVersion)) return;
+  if (await isTreeSitterCliBinaryUsable(pluginRoot, pinnedSha256ForVersion)) return "already-usable";
   if (!existsSync(installScript)) throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
   assertRegularFile(installScript);
 
@@ -191,7 +197,7 @@ export async function ensureTreeSitterCliBinary(
       const existingProbe = await answersTreeSitterVersion(existingBinaryPath);
       throw new Error(
         `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
+        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
         + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
       );
     }
@@ -215,8 +221,8 @@ export async function ensureTreeSitterCliBinary(
     if (!stagedProbe.usable) {
       throw Object.assign(
         new Error(
-          `tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`
-          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
+          `The tree-sitter ${version} executable ${treeSitterCliBinaryPath(pluginRoot)} matches the pinned SHA-256 `
+          + `but ${TREE_SITTER_CLI_CANNOT_RUN}${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
         ),
         installOutput,
       );
@@ -225,6 +231,7 @@ export async function ensureTreeSitterCliBinary(
     if (lstatSync(finalExecutable, { throwIfNoEntry: false })) assertRegularFile(finalExecutable);
     if (sha256OfFile(stagedExecutable) !== pinnedSha256) throw new Error("tree-sitter-cli staged executable changed after verification");
     renameSync(stagedExecutable, finalExecutable);
+    return "release";
   } finally {
     rmSync(stagingDir, { recursive: true, force: true });
   }

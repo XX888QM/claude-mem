@@ -33,8 +33,8 @@ import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatP
 import { isCodexSelected } from './CodexProvider.js';
 import { isGrokSelected } from './GrokProvider.js';
 import { isClaudeSubscriptionDisallowed } from './claude-quota-policy.js';
-import { canClaudeServeAsFallback } from '../../shared/claude-fallback-readiness.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import { canClaudeServeAsFallback, claudeQuotaStandIn } from '../../shared/claude-fallback-readiness.js';
 import {
   cooldownAppliesToCurrentAccount,
   getQuotaCooldown,
@@ -207,16 +207,22 @@ interface RoutedProvider {
  * The shared rule for every plain dispatch return: keep `primary` unless its
  * breaker holds for its quota AND the fallback can serve. When neither can,
  * this returns `primary`, and admission withholds it exactly as it does today.
+ *
+ * A Claude primary whose other credential can take the work
+ * (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD) stays on Claude, and admission runs
+ * it on that credential: same models, same prompts. The provider fallback is
+ * next in line, once both credentials are held.
  */
 function applyQuotaFallback(primary: SelectableProvider, nowMs: number = Date.now()): RoutedProvider {
   if (!isHeldForQuota(primary, nowMs)) return { provider: primary, fallbackFrom: null };
+  if (primary === 'claude' && claudeQuotaStandIn() !== null) return { provider: primary, fallbackFrom: null };
   const fallback = quotaFallbackTarget(primary, nowMs);
   return fallback === null
     ? { provider: primary, fallbackFrom: null }
     : { provider: fallback, fallbackFrom: primary };
 }
 
-type QuotaFallbackState = 'primary' | 'fallback' | 'probing' | 'blocked';
+type QuotaFallbackState = 'primary' | 'fallback' | 'credential' | 'probing' | 'blocked';
 
 /**
  * Last state logged by `selectProviderForGenerator`. Module-level because
@@ -227,8 +233,9 @@ let quotaFallbackState: QuotaFallbackState = 'primary';
 
 function noteQuotaFallbackTransition(primary: SelectableProvider, routed: RoutedProvider, nowMs: number): void {
   let next: QuotaFallbackState;
+  const standIn = primary === 'claude' ? claudeQuotaStandIn() : null;
   if (routed.fallbackFrom != null) next = 'fallback';
-  else if (isHeldForQuota(primary, nowMs)) next = 'blocked';
+  else if (isHeldForQuota(primary, nowMs)) next = standIn ? 'credential' : 'blocked';
   else if (quotaBreakerOf(primary) !== null) next = 'probing';
   else next = 'primary';
   if (next === quotaFallbackState) return;
@@ -251,6 +258,12 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
       return;
     case 'probing':
       logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
+      return;
+    case 'credential':
+      logger.warn('SESSION', standIn === 'subscription'
+        ? 'API key quota exhausted; running the Claude observer on the subscription login until the key recovers'
+        : 'Claude Code login paused for quota; running the Claude observer on the fallback API key until the login recovers',
+      { primary, credential: standIn });
       return;
     case 'blocked': {
       // Distinct from probing: nothing is being probed and nothing can take
@@ -342,6 +355,8 @@ export function getSelectedProvider(): SelectableProvider {
  * take them.
  */
 export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): SelectableProvider | null {
+  // The primary Claude credential is held, but runs go on the other one meanwhile.
+  if (held === 'claude' && claudeQuotaStandIn()) return 'claude';
   if (readQuotaFallbackProvider() === null) return null;
   const serving = getSelectedProvider();
   if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;

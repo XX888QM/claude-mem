@@ -83,7 +83,7 @@ describe('worker tree-sitter CLI provisioning', () => {
   it('runs dirname-relative installers inside the isolated stage', async () => {
     const cliDir = writeMarketplaceCliPackage(downloadingInstallScript.replace('process.cwd()', '__dirname')
       + "\nfs.writeFileSync(require('path').join(__dirname, 'installer-ran'), '');");
-    await expect(ensureTreeSitterCliBinary(pluginRoot, 1000, pinRepoBinary)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(pluginRoot, 1000, pinRepoBinary)).resolves.toBe('release');
     expect(existsSync(join(cliDir, 'installer-ran'))).toBe(false);
     expect(readFileSync(treeSitterCliBinaryPath(pluginRoot))).toEqual(readFileSync(REPO_TREE_SITTER_BINARY));
   });

@@ -45,7 +45,9 @@ import {
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
-import { ObserverResponsePacer } from './session/response-pacer.js';
+import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
+import { recordObserverFailure } from '../../shared/observer-health.js';
+import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -174,8 +176,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
   }
 
-  // Quota.
-  if (message.toLowerCase().includes('quota exceeded')) {
+  // Quota. A spent API key's credit balance comes back as a 400
+  // invalid_request_error ("API Error: 400 {…credit balance is too low…}"),
+  // so it is matched here, before the 400 branches call it unrecoverable.
+  if (
+    message.toLowerCase().includes('quota exceeded') ||
+    /\bcredit balance is too low\b/i.test(describeErrorFeedbackText(err))
+  ) {
     return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
   }
 
@@ -262,6 +269,18 @@ export function computeFullContextTokens(
     (usage.cache_creation_input_tokens || 0) +
     (usage.cache_read_input_tokens || 0)
   );
+}
+
+/**
+ * The credential a Claude spawn bills, from the env it is spawned with. With no
+ * key, no gateway token and no gateway URL the CLI runs on the Claude Code
+ * login, whether a fresh token was injected or the CLI uses its own stored one
+ * (the token read came back expired or absent). A gateway run is neither.
+ */
+export function observerCredentialOf(spawnEnv: Record<string, string | undefined>): ClaudeCredential | undefined {
+  if (spawnEnv.ANTHROPIC_API_KEY) return 'api-key';
+  if (spawnEnv.ANTHROPIC_AUTH_TOKEN || spawnEnv.ANTHROPIC_BASE_URL) return undefined;
+  return 'subscription';
 }
 
 export class ClaudeProvider {
@@ -395,9 +414,20 @@ export class ClaudeProvider {
       session.sessionDbId
     );
 
+    // Set when processAgentResponse itself throws (storage, FK): that is not a
+    // broken stream, so the catch below leaves it to the runner, which books
+    // it in observer health.
+    let responseProcessingThrew = false;
     try {
-      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-      const authMethod = getAuthMethodDescription();
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
+        standIn: session.claudeAuthOverride ?? undefined,
+      }));
+      session.observerAuth = observerCredentialOf(isolatedEnv);
+      // A quota-fallback run is labelled by what it actually bills: the quota
+      // guard protects a login it runs on, and never pauses a key.
+      const authMethod = !session.claudeAuthOverride ? getAuthMethodDescription()
+        : session.observerAuth === 'api-key' ? 'API key (quota fallback run)'
+          : 'Claude Code OAuth token (quota fallback run)';
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
       // while it runs. Quota snapshots are tagged with it and checked against
@@ -681,6 +711,9 @@ export class ClaudeProvider {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
+          } catch (processingError) {
+            responseProcessingThrew = true;
+            throw processingError;
           } finally {
             pacer.processingFinished();
           }
@@ -819,6 +852,9 @@ export class ClaudeProvider {
                   activeResponseContext.current,
                   turnEmptyOutputReason ?? 'no-content-blocks'
                 );
+              } catch (processingError) {
+                responseProcessingThrew = true;
+                throw processingError;
               } finally {
                 pacer.processingFinished();
               }
@@ -857,6 +893,37 @@ export class ClaudeProvider {
           claimed: session.claimedMessageIds.length,
         });
         await this.releaseClaimedBatchForTransportExit(session, 'transport:thinking_rejected');
+      }
+      // A spent allowance thrown by the CLI (a spent API key's credit balance
+      // arrives as a 400) pauses like the quota prose path: the claimed batch
+      // goes back to pending, and the classified error tells the runner to
+      // book a quota pause instead of a generic failure.
+      if (!session.abortReason && !responseProcessingThrew && !isClassified(error)) {
+        const classified = classifyClaudeError(error);
+        if (classified.kind === 'quota_exhausted') {
+          session.abortReason = 'quota:unknown:quota_exhausted';
+          try {
+            session.abortController.abort();
+          } catch {
+            // best-effort
+          }
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          throw classified;
+        }
+      }
+      // The stream broke with the batch still claimed. Only a transient fault
+      // of the stream itself is released for the transport resume. Anything
+      // classifyClaudeError calls non-transient (a refused credential, a 400,
+      // "Prompt is too long") and any throw from processAgentResponse
+      // (storage) is rethrown untouched, so the runner books it in observer
+      // health exactly as before instead of resending it on the backoff.
+      if (
+        !session.abortReason &&
+        !responseProcessingThrew &&
+        !isClassified(error) &&
+        classifyClaudeError(error).kind === 'transient'
+      ) {
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_stream');
       }
       throw error;
     } finally {
@@ -903,12 +970,14 @@ export class ClaudeProvider {
       project: string;
       signals?: AbortSignal[];
       thinkingStripped?: boolean;
+      /** The session's quota-fallback credential (ActiveSession.claudeAuthOverride). */
+      standIn?: ClaudeCredential;
     },
     modelId: string,
     claudePath: string,
   ): Promise<string | null> {
     if (isClaudeSubscriptionDisallowed()) throw new Error(CLAUDE_QUOTA_DISABLED_MESSAGE);
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -972,6 +1041,7 @@ export class ClaudeProvider {
         project: session.project,
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
+        standIn: session.claudeAuthOverride ?? undefined,
       },
       modelId,
       claudePath,

@@ -23,6 +23,7 @@ export interface Summary {
   id: number;
   session_id: string;
   project: string;
+  merged_into_project?: string | null;
   platform_source: string;
   request?: string;
   investigated?: string;
@@ -115,6 +116,7 @@ export interface Settings {
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER?: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL?: string;
   CLAUDE_MEM_TEAMBRAIN_URL?: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD?: string;
 
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS?: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS?: string;

@@ -5,11 +5,13 @@ import { formatHostForUrl } from './worker-url.js';
 
 export const REMOTE_SPOOL_PROTOCOL_VERSION = 1;
 export const REMOTE_SPOOL_TIMEOUT_MS = 1000;
+export const REMOTE_SPOOL_REQUEST_TIMEOUT_MS = 10_000;
 export const REMOTE_SPOOL_MAX_ENTRIES = 16;
-export const REMOTE_SPOOL_MAX_JSON_BYTES = 5 * 1024 * 1024;
+// Matches the worker's 20 MiB spool body limit; depth and node caps below stay as the recursion guard.
+export const REMOTE_SPOOL_MAX_JSON_BYTES = 20 * 1024 * 1024;
 const REMOTE_SPOOL_MAX_DEPTH = 16;
 const REMOTE_SPOOL_MAX_NODES = 10_000;
-const REMOTE_SPOOL_MAX_TEXT_CHARS = 256 * 1024;
+const REMOTE_SPOOL_MAX_TEXT_CHARS = 20 * 1024 * 1024;
 
 const commonPayload = z.object({
   contentSessionId: z.string().min(1).max(512),
@@ -25,6 +27,13 @@ const observationPayload = commonPayload.extend({
   agentType: z.string().max(128).optional(),
 });
 const timestamp = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const workStateTelemetryPayload = z.object({
+  contentSessionId: z.string().min(1).max(512),
+  platformSource: z.string().min(1).max(128),
+  eventId: z.string().min(1).max(2048),
+  agentId: z.string().max(128).optional(),
+  agentRole: z.enum(['main', 'subagent', 'unknown']).optional(),
+});
 const entrySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('observation'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('file_edit'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
@@ -45,6 +54,17 @@ const entrySchema = z.discriminatedUnion('kind', [
       transcriptByteOffset: z.number().int().nonnegative().nullable().optional(),
     }).passthrough()).min(1).max(128),
   }), enqueuedAtEpochMs: timestamp }),
+  z.object({ kind: z.literal('work_state_telemetry'), payload: z.discriminatedUnion('kind', [
+    workStateTelemetryPayload.extend({
+      kind: z.literal('instruction'),
+      state: z.enum(['returned', 'disabled', 'excluded', 'missing', 'unknown']),
+    }).strict(),
+    workStateTelemetryPayload.extend({
+      kind: z.literal('mcp'),
+      tool: z.enum(['read', 'write']),
+      outcome: z.enum(['ok', 'error', 'excluded', 'disabled', 'unknown']),
+    }).strict(),
+  ]), enqueuedAtEpochMs: timestamp }),
 ]);
 
 export const remoteSpoolEnvelopeSchema = z.object({

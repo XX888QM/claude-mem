@@ -274,6 +274,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -404,6 +405,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
         return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty, "off", "claude", "gemini", "openrouter", or "openai-compatible"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {
@@ -580,16 +586,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     return { valid: true };
   }
 
-  private isMcpEnabled(): boolean {
+  // Installed plugin: the worker bundle runs from <pluginRoot>/scripts, so the
+  // package root is the plugin root and holds .mcp.json. Repo checkout: plugin/.
+  // Same layout resolution as ViewerRoutes' UI assets.
+  private mcpConfigDir(): string {
     const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    return existsSync(mcpPath);
+    const candidates = [packageRoot, path.join(packageRoot, 'plugin')];
+    return candidates.find(dir =>
+      existsSync(path.join(dir, '.mcp.json')) || existsSync(path.join(dir, '.mcp.json.disabled'))
+    ) ?? candidates[0];
+  }
+
+  private isMcpEnabled(): boolean {
+    return existsSync(path.join(this.mcpConfigDir(), '.mcp.json'));
   }
 
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const mcpDir = this.mcpConfigDir();
+    const mcpPath = path.join(mcpDir, '.mcp.json');
+    const mcpDisabledPath = path.join(mcpDir, '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
       renameSync(mcpDisabledPath, mcpPath);

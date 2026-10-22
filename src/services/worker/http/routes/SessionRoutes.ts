@@ -5,7 +5,8 @@ import { ingestObservation, ingestSummarize, ingestSessionEnd, trustedCwd, type 
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
+import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -24,6 +25,7 @@ import {
   isGrokSelected,
 } from '../../GrokProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -226,7 +228,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -408,7 +412,20 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+    // #2756: a generator that never acquired its concurrency slot (still
+    // parked in waitForSlot) can wait indefinitely — it never idles-out,
+    // because the idle monitor only runs once the generator loop is
+    // consuming messages. Abort the parked wait and restart with the new
+    // provider immediately instead of leaving it stuck. A generator that HAS
+    // acquired its slot (mid-response) is not aborted here — it switches at
+    // its next message boundary (see below).
+    const providerChanged = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (providerChanged && isSessionParkedForSlot(sessionDbId)) {
+      // Defensive re-guard: `session` is already narrowed non-null by the
+      // early return above, but this branch spans a 3-operand `&&` plus a
+      // trailing function call before any property access — re-asserting
+      // the guard here costs nothing and removes any dependency on TS
+      // control-flow narrowing surviving that shape across the awaits below.
       if (!session) return;
       logger.info('SESSION', 'Provider changed while generator parked waiting for a slot; aborting the wait to switch now', {
         sessionId: sessionDbId,
@@ -430,17 +447,21 @@ export class SessionRoutes extends BaseRouteHandler {
 
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
-    if (session.currentProvider && session.currentProvider !== selectedProvider) {
-      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
+    // A running generator in an active session never idles out, so it ends at
+    // its next message boundary and the runner resumes on the selected
+    // provider (#4846). Not when dispatch routes around the provider this
+    // generator runs on: it is that provider's probe, or its own failure moves
+    // the work to the fallback, so a switch would only restart a healthy run.
+    const switchNeeded = providerChanged && (selection.fallbackFrom ?? null) !== session.currentProvider;
+    if (switchNeeded && !session.providerSwitchPending) {
+      logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
         currentProvider: session.currentProvider,
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider.
-      // The buffered queue carries over; the next generator opens a new
-      // generation seeded from this session's memory (#3800, #3479).
     }
+    session.providerSwitchPending = switchNeeded;
   }
 
   /**
@@ -500,7 +521,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
@@ -787,6 +813,14 @@ export class SessionRoutes extends BaseRouteHandler {
     // suggestions) arrive like a user turn; Codex only (see the hook handler).
     if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // Grok Bot's own research sub-agent briefings arrive like a user turn;
+    // Grok Bot only (see the hook handler, #4811).
+    if (rawPrompt && SessionRoutes.rawPlatformSourceFromRequest(req)?.trim().toLowerCase() === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Grok Bot internal helper prompt before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_system_prompt' });
       return;
     }
