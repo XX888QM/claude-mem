@@ -13,6 +13,7 @@
 #   --prompt-file PATH --output-format plain --no-memory ... -m MODEL
 #   --reasoning-effort LEVEL --cwd DIR
 set -euo pipefail
+umask 077
 
 REAL_HOME="${REAL_HOME:-$HOME}"
 REAL_GROK="${REAL_GROK:-$REAL_HOME/.grok/bin/grok}"
@@ -20,6 +21,7 @@ AUTH_JSON="${GROK_AUTH_PATH:-$REAL_HOME/.grok/auth.json}"
 LOG="${CLAUDE_MEM_GROK_OBSERVER_LOG:-$REAL_HOME/.claude-mem/logs/grok-observer-api.log}"
 TOKEN_LOG="${TOKENSTAT_GROK_LOG:-$REAL_HOME/.grok/logs/unified.jsonl}"
 mkdir -p "$(dirname "$LOG")"
+if [ -f "$LOG" ]; then chmod 600 "$LOG"; fi
 
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true
@@ -54,7 +56,7 @@ done
 # If this is not an observer prompt-file job, fall back to isolated real grok
 # (should not happen for claude-mem worker, but keep a safe path).
 if [ -z "$PROMPT_FILE" ] || [ ! -f "$PROMPT_FILE" ]; then
-  log "fallback real grok (no prompt-file): $*"
+  log "fallback real grok (no prompt-file)"
   OBS_HOME="${CLAUDE_MEM_GROK_HOME:-$REAL_HOME/.claude-mem/observer-grok-home}"
   export HOME="$OBS_HOME"
   export GROK_HOME="$OBS_HOME"
@@ -84,6 +86,7 @@ def log(msg: str) -> None:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
             from datetime import datetime
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
     except Exception:
@@ -148,11 +151,21 @@ def get_token(rejected=None):
         return fresh
 
 
+def credential_failure(error):
+    # Never log exception text: native auth/network errors can contain credentials.
+    requires_login = isinstance(error, (ValueError, TypeError, KeyError, StopIteration, AttributeError)) or (
+        isinstance(error, RuntimeError) and "Grok login required" in str(error)
+    )
+    message = "Grok login required" if requires_login else "credential renewal unavailable"
+    log(message)
+    print(f"grok-observer: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 try:
     token = get_token()
-except Exception:
-    print("grok-observer: credential refresh failed; retry or sign in with grok login", file=sys.stderr)
-    sys.exit(1)
+except Exception as error:
+    credential_failure(error)
 
 body = {
     "model": model,
@@ -183,25 +196,39 @@ try:
         except urllib.error.HTTPError as error:
             err = error.read().decode("utf-8", errors="replace")[:800]
             try:
-                code = json.loads(err).get("code")
+                decoded = json.loads(err)
+                code = decoded.get("code") or (decoded.get("error") or {}).get("code")
             except (ValueError, AttributeError):
                 code = None
             auth_error = error.code == 401 or (error.code == 403 and code == "unauthenticated:bad-credentials")
             if attempt == 0 and auth_error:
-                token = get_token(rejected=token)
+                try:
+                    token = get_token(rejected=token)
+                except Exception as refresh_error:
+                    credential_failure(refresh_error)
                 continue
             log(f"HTTP {error.code} model={model}")
             print(f"grok-observer: API HTTP {error.code}", file=sys.stderr)
             sys.exit(1)
-except Exception:
-    log("request or credential renewal failed")
-    print("grok-observer: request or credential renewal failed; check Grok login/connectivity", file=sys.stderr)
+except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+    # The POST may already have been billed: the Worker's paid-send budget owns retries.
+    message = f"transport failure ({type(error).__name__})"
+    log(message)
+    print(f"grok-observer: {message}", file=sys.stderr)
+    sys.exit(1)
+except json.JSONDecodeError:
+    log("invalid API response")
+    print("grok-observer: invalid API response", file=sys.stderr)
+    sys.exit(1)
+except Exception as error:
+    log("transport failure (unexpected API error)")
+    print("grok-observer: transport failure (unexpected API error)", file=sys.stderr)
     sys.exit(1)
 
 try:
     content = payload["choices"][0]["message"]["content"] or ""
 except Exception:
-    log(f"bad response: {str(payload)[:300]}")
+    log("bad API response shape")
     print("grok-observer: unexpected API response", file=sys.stderr)
     sys.exit(1)
 

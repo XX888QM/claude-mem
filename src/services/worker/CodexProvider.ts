@@ -13,6 +13,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import { withRetry } from './retry.js';
 import { recordCodexUsage, type CodexCliUsage } from '../../utils/codex-usage-meter.js';
 
 interface CodexConfig {
@@ -24,7 +25,8 @@ interface CodexConfig {
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna';
 export const DEFAULT_CODEX_REASONING_EFFORT = 'medium';
 
-const CODEX_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh']);
+export const CODEX_REASONING_EFFORTS = new Set(['none', 'low', 'medium', 'high', 'xhigh']);
+export function isCodexReasoningEffort(value: string): boolean { return CODEX_REASONING_EFFORTS.has(value); }
 const MAX_CONTEXT_MESSAGES = 12;
 const MAX_ESTIMATED_TOKENS = 60_000;
 const CHARS_PER_TOKEN_ESTIMATE = 4;
@@ -95,16 +97,37 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
   }
 
   protected async query(
+    history: ConversationMessage[], config: CodexConfig,
+    signalOrSession?: AbortSignal | ActiveSession,
+    perAttemptTimeoutMs?: number,
+    paidSendBudget?: import('./paid-send-budget.js').PaidSendBudget,
+    label?: import('./OpenAICompatibleProvider.js').ObserverRequestLabel,
+    activeSession?: ActiveSession,
+  ): Promise<ProviderQueryResult> {
+    const session = activeSession ?? (signalOrSession && 'sessionDbId' in signalOrSession ? signalOrSession : undefined);
+    const signal = session?.abortController.signal ?? (signalOrSession && !('sessionDbId' in signalOrSession) ? signalOrSession : undefined);
+    return withRetry(attemptSignal => this.querySingle(history, config, attemptSignal, perAttemptTimeoutMs, undefined, label, session), {
+      maxRetries: 0, paidSendBudget, abortSignal: signal, attemptDeadlineOwnedByCaller: true, label: 'Codex CLI',
+    });
+  }
+
+  private async querySingle(
     history: ConversationMessage[],
     config: CodexConfig,
-    session?: ActiveSession,
+    signalOrSession?: AbortSignal | ActiveSession,
+    _perAttemptTimeoutMs?: number,
+    _paidSendBudget?: import('./paid-send-budget.js').PaidSendBudget,
+    _label?: import('./OpenAICompatibleProvider.js').ObserverRequestLabel,
+    activeSession?: ActiveSession,
   ): Promise<ProviderQueryResult> {
+    const session = activeSession ?? (signalOrSession && 'sessionDbId' in signalOrSession ? signalOrSession : undefined);
+    const signal = session?.abortController.signal ?? (signalOrSession && !('sessionDbId' in signalOrSession) ? signalOrSession : undefined);
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     const maxConcurrent = Math.max(
       1,
       parseInt(settings.CLAUDE_MEM_MAX_CONCURRENT_AGENTS, 10) || DEFAULT_MAX_CONCURRENT_CODEX,
     );
-    const releaseSlot = await acquireCodexSlot(maxConcurrent, session?.abortController.signal);
+    const releaseSlot = await acquireCodexSlot(maxConcurrent, signal);
     const truncated = this.truncateHistory(history);
     const prompt = [
       'You are the claude-mem observer. Return only valid claude-mem XML.',
@@ -133,7 +156,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         turns: truncated.length,
       });
       try {
-        const execResult = await runCodexExec(args, prompt, session?.abortController.signal, codexHome);
+        const execResult = await runCodexExec(args, prompt, signal, codexHome);
         codexQuotaBlockedUntil = 0;
         if (execResult.usage) {
           const recorded = recordCodexUsage({

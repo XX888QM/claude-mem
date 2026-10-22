@@ -52,6 +52,40 @@ function makeSession(): ActiveSession {
 }
 
 describe('GrokProvider', () => {
+  for (const [diagnostic, kind, reason] of [
+    ['grok-observer: transport failure (URLError)', 'transient', 'transport:transient'],
+    ['grok-observer: API HTTP 503', 'transient', 'transport:transient'],
+    ['grok-observer: credential renewal unavailable', 'transient', 'transport:transient'],
+    ['grok-observer: request or credential renewal failed; check Grok login/connectivity', 'transient', 'transport:transient'],
+    ['grok-observer: Grok login required', 'auth_invalid', 'auth:auth_invalid'],
+    ['grok-observer: API HTTP 401', 'auth_invalid', 'auth:auth_invalid'],
+  ]) {
+    it(`preserves and classifies ${diagnostic} without an in-place resend`, async () => {
+      if (process.platform === 'win32') return;
+      const directory = mkdtempSync(join(tmpdir(), 'grok-failure-class-'));
+      const executable = join(directory, 'grok');
+      const countFile = join(directory, 'calls');
+      writeFileSync(executable, `#!/bin/sh\nprintf x >> '${countFile}'\nprintf '%s\\n' '${diagnostic}' >&2\nexit 1\n`);
+      chmodSync(executable, 0o755);
+      process.env.GROK_PATH = executable;
+      class Probe extends GrokProvider {
+        async run(session: ActiveSession) {
+          try {
+            await this.query([{ role: 'user', content: 'test' }], { apiKey: 'grok-cli', model: DEFAULT_GROK_MODEL, reasoningEffort: 'low' }, session);
+          } catch (error) { this.handleSessionError(error, session); }
+        }
+      }
+      const session = makeSession();
+      try {
+        await expect(new Probe({} as any, {} as any).run(session)).rejects.toMatchObject({ kind });
+        expect(session.abortReason).toBe(reason);
+        expect(session.abortController.signal.aborted).toBe(true);
+        expect(session.claimedMessageIds).toEqual([1]);
+        expect(readFileSync(countFile, 'utf8')).toBe('x');
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    });
+  }
+
   it('runs grok-4.5 headless with no tools and membership CLI flags', () => {
     expect(DEFAULT_GROK_MODEL).toBe('grok-4.5');
     expect(DEFAULT_GROK_REASONING_EFFORT).toBe('medium');
@@ -198,6 +232,23 @@ describe('GrokProvider', () => {
       delete process.env.CLAUDE_MEM_SUMMARY_MODEL;
       delete process.env.CLAUDE_MEM_SUMMARY_EFFORT;
     }
+  });
+
+  it('does not mistake a successful observation about usage limits for a provider quota failure', async () => {
+    if (process.platform === 'win32') return;
+    const binDir = mkdtempSync(join(tmpdir(), 'claude-mem-grok-limit-word-'));
+    const grokPath = join(binDir, 'grok');
+    const xml = '<observation><type>discovery</type><title>Quota investigation</title><narrative>Grok session limit reached was investigated.</narrative></observation>';
+    writeFileSync(grokPath, `#!/bin/sh\nprintf '%s\\n' '${xml}'\n`);
+    chmodSync(grokPath, 0o755);
+    process.env.GROK_PATH = grokPath;
+    class TestGrokProvider extends GrokProvider {
+      runQuery() { return this.query([{ role: 'user', content: 'test' }], { apiKey: 'grok-cli', model: DEFAULT_GROK_MODEL, reasoningEffort: 'low' }); }
+    }
+    try {
+      expect((await new TestGrokProvider({} as any, {} as any).runQuery()).content).toContain('session limit reached');
+      expect(isGrokQuotaCooldownActive()).toBe(false);
+    } finally { rmSync(binDir, { recursive: true, force: true }); }
   });
 
   it('preserves claimed work when the Grok quota is exhausted', async () => {

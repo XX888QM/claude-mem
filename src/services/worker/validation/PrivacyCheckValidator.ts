@@ -31,7 +31,7 @@ export class PrivacyCheckValidator {
     if (userPrompt === null) {
       logger.warn(
         'HOOK',
-        `${operationType}: no user_prompts row for prompt #${promptNumber} — ingesting anyway (session-init likely raced worker boot; see #2794/#2795)`,
+        `${operationType}: no user_prompts row for prompt #${promptNumber} — ingesting without user-prompt attribution`,
         { sessionId: sessionDbId, contentSessionId, promptNumber, ...additionalContext }
       );
       return { allow: true, prompt: '' };

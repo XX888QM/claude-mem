@@ -17,7 +17,8 @@ PROGRAM = SOURCE.read_text().split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY\n", 
 
 
 def check(*, expired=False, rejected=False, refresh_fails=False, unchanged=False,
-          soon=False, status=403, denied=False, concurrent=False):
+          soon=False, status=403, denied=False, concurrent=False, network=False,
+          unexpected=False, always_reject=False, nested=False):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         auth_path = root / ".grok/auth.json"
@@ -56,12 +57,16 @@ def check(*, expired=False, rejected=False, refresh_fails=False, unchanged=False
         def request(req, **kwargs):
             token = req.get_header("Authorization")
             requests.append(token)
+            if network:
+                raise urllib.error.URLError("private request data old-test-token")
+            if unexpected:
+                raise RuntimeError("private request data old-test-token")
             if denied:
                 raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {},
                                              io.BytesIO(b'{"code":"permission-denied"}'))
-            if (expired or rejected) and token == "Bearer old-test-token":
+            if always_reject or ((expired or rejected) and token == "Bearer old-test-token"):
                 raise urllib.error.HTTPError(req.full_url, status, "Forbidden", {},
-                                             io.BytesIO(b'{"code":"unauthenticated:bad-credentials"}'))
+                                             io.BytesIO(json.dumps({"error": {"code": "unauthenticated:bad-credentials"}} if nested else {"code": "unauthenticated:bad-credentials"}).encode()))
             return io.BytesIO(b'{"choices":[{"message":{"content":"OK"}}]}')
 
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -79,7 +84,7 @@ def check(*, expired=False, rejected=False, refresh_fails=False, unchanged=False
                         assert list(pool.map(lambda _: namespace["get_token"](), range(6))) == ["fresh-test-token"] * 6
             except SystemExit as error:
                 exit_code = error.code
-        if refresh_fails or unchanged or denied:
+        if refresh_fails or unchanged or denied or network or unexpected or always_reject:
             assert exit_code != 0, "failed renewal must fail closed"
             assert auth_path.exists(), "failed renewal must not delete credentials"
         else:
@@ -87,6 +92,20 @@ def check(*, expired=False, rejected=False, refresh_fails=False, unchanged=False
             assert stdout.getvalue().strip() == "OK"
         assert len(calls) == int(expired or rejected or soon or concurrent), calls
         assert len(requests) <= 2, "authentication retry must be bounded"
+        if network:
+            assert len(requests) == 1, "ambiguous paid POST must not retry in place"
+            assert "transport failure (URLError)" in stderr.getvalue()
+        if unexpected:
+            assert len(requests) == 1
+            assert "transport failure" in stderr.getvalue()
+            assert "credential renewal unavailable" not in stderr.getvalue()
+        if always_reject:
+            assert len(requests) == 2
+            assert "API HTTP 401" in stderr.getvalue()
+        if refresh_fails:
+            assert "credential renewal unavailable" in stderr.getvalue()
+        if unchanged:
+            assert "Grok login required" in stderr.getvalue()
         combined = stdout.getvalue() + stderr.getvalue()
         if (root / "log").exists():
             combined += (root / "log").read_text()
@@ -104,4 +123,8 @@ if __name__ == "__main__":
     check(rejected=True, status=401)
     check(denied=True)
     check(concurrent=True)
-    print("9 observer refresh checks passed")
+    check(network=True)
+    check(unexpected=True)
+    check(rejected=True, always_reject=True, status=401)
+    check(rejected=True, nested=True)
+    print("13 observer refresh/transport checks passed")

@@ -4,11 +4,19 @@ import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import { logger } from '../../../utils/logger.js';
 import { getSdkProcessForSession, ensureSdkProcessExit } from '../../../supervisor/process-registry.js';
 import { SESSION_IDLE_TIMEOUT_MS } from '../SessionMessageBuffer.js';
+import { abortCategoryOf, PRESERVED_ABORT_CATEGORIES } from './abort-reason.js';
 
 export interface GeneratorExitDependencies {
   sessionManager: SessionManager;
   completionHandler: SessionCompletionHandler;
   bufferedWorkRetentionMs?: number;
+  /**
+   * Start a fresh generator for this session on the next tick (the runner's
+   * resumeGeneratorLater). Used only for buffered work that finalizing would
+   * otherwise dispose of: work that arrived while an idle generator was
+   * stopping, and one rescue of a summarize after an unclassified failure.
+   */
+  resumeGenerator?: (source: string) => void;
 }
 
 /**
@@ -55,18 +63,39 @@ export async function handleGeneratorExit(
   // start a fresh generator for the newly-selected provider on this same
   // session — finalizeSession + removeSessionImmediate would dispose the
   // in-RAM buffer (SessionManager.removeSessionImmediate -> buffer.dispose),
-  // wiping the very queue/conversationHistory the switch is meant to preserve.
-  const abortCategory = (reason ?? '').split(':')[0];
+  // wiping the very queue the switch is meant to preserve. The transcript is
+  // not carried over: every generator start opens a new generation seeded from
+  // the session's memory (#3800, #3479), so the queue is what must survive.
+  const abortCategory = abortCategoryOf(reason);
   // Every category listed here has ALREADY called resetProcessingToPending
   // (except provider_switch, which parks a live buffer for a provider change).
   // Falling through to finalizeSession would remove the session and undo that
   // preservation — the second half of #3752.
-  const PRESERVES_CLAIMED_WORK = ['quota', 'auth', 'overflow', 'provider_switch', 'transport'];
-  if (PRESERVES_CLAIMED_WORK.includes(abortCategory)) {
+  // 'output_retry' is a queued batch whose reply was neither XML nor the skip
+  // sentinel: ResponseProcessor reset it to pending for one more try in a
+  // fresh generation, which the runner starts on the next tick. 'drift' ends a
+  // generation that kept leaving the observation schema; its batches were
+  // already stored, and buffered work continues in a fresh generation.
+  // The full list lives in abort-reason.ts, beside the telemetry enum.
+  // Every transport pause resumes on the transport backoff — a deadline or an
+  // upstream fault that outlived the provider's retries, whatever code it
+  // carries, and a transport failure the Claude CLI returned as text — except a
+  // response stall, which the runner resumes on its own bounded schedule.
+  const resumesOnTransportBackoff = abortCategory === 'transport' && reason !== 'transport:response_stall';
+  // A later run may finish for a different reason before an earlier transport
+  // timer fires. Its old timer must not bypass the new pause decision.
+  if (!resumesOnTransportBackoff) {
+    sessionManager.clearTransportResume?.(sessionDbId);
+  }
+  if (PRESERVED_ABORT_CATEGORIES.has(abortCategory)) {
+    session.pausedReason = abortCategory;
     logger.warn('SESSION', `Generator paused for ${abortCategory}; preserving buffered work`, {
       sessionId: sessionDbId,
       pendingCount: sessionManager.getMessageBuffer().getPendingCount(sessionDbId),
     });
+    if (resumesOnTransportBackoff) {
+      sessionManager.scheduleTransportResume?.(sessionDbId);
+    }
     return;
   }
 

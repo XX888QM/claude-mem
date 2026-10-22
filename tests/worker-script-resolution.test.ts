@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -160,5 +161,28 @@ describe('inline bootstrap resolvers stay in lockstep', () => {
     expect(command).not.toContain('mtimeMs');
     expect(command).toContain('.orphaned_at');
     expect(command).toContain('W(p.basename(a),p.basename(b))');
+  });
+
+  test('prefers the local Codex cache when cache versions tie', () => {
+    const home = makeCacheRoot();
+    const config = join(home, '.claude');
+    const local = join(home, '.codex', 'plugins', 'cache', 'claude-mem-local', 'claude-mem', '14.0.1');
+    const upstream = join(home, '.codex', 'plugins', 'cache', 'thedotmack', 'claude-mem', '14.0.1');
+    for (const root of [local, upstream]) {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      writeFileSync(join(root, 'scripts', 'worker-service.cjs'), '');
+    }
+    const command = buildShellCommand({
+      host: 'codex-cli',
+      requireFile: 'worker-service.cjs',
+      trailingCommand: ['printf', "'%s'", '"$_P"'],
+      notFoundMessage: 'missing',
+    });
+    const result = spawnSync('sh', ['-c', command], {
+      env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(local);
   });
 });

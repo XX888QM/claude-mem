@@ -2,8 +2,7 @@
   "id": "claude-mem",
   "name": "Claude-Mem (Persistent Memory)",
   "description": "OpenClaw plugin for Claude-Mem. Records observations from embedded runner sessions and streams them to messaging channels.",
-  "kind": "memory",
-  "version": "13.28.0",
+  "version": "13.35.0",
   "license": "Apache-2.0",
   "author": "thedotmack",
   "homepage": "https://claude-mem.ai",
@@ -18,7 +17,7 @@
       "syncMemoryFile": {
         "type": "boolean",
         "default": true,
-        "description": "Inject observation context into the agent system prompt via before_prompt_build hook. When true, agents receive cross-session context without MEMORY.md being overwritten."
+        "description": "Prepend untrusted historical reference data to local agent prompts via before_prompt_build, without changing system instructions or overwriting MEMORY.md."
       },
       "syncMemoryFileExclude": {
         "type": "array",

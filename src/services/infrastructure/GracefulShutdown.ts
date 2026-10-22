@@ -30,12 +30,14 @@ export interface GracefulShutdownConfig {
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
   const failures: Error[] = [];
+  const failureDetails: string[] = [];
   const attempt = async (step: string, action: () => Promise<void>): Promise<void> => {
     try {
       await action();
     } catch (error) {
       const normalized = error instanceof Error ? error : new Error(String(error));
       failures.push(normalized);
+      failureDetails.push(`${step}: ${normalized.message}`);
       logger.error('SHUTDOWN', `${step} failed — continuing remaining cleanup`, {}, normalized);
     }
   };
@@ -48,7 +50,7 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     });
   }
 
-  await attempt('Session drain', () => config.sessionManager.shutdownAll());
+  await attempt('sessions', () => config.sessionManager.shutdownAll());
 
   const mcpClient = config.mcpClient;
   if (mcpClient) {
@@ -60,7 +62,7 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
 
   const chromaMcpManager = config.chromaMcpManager;
   if (chromaMcpManager) {
-    await attempt('Chroma MCP stop', async () => {
+    await attempt('Chroma', async () => {
       logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
       await chromaMcpManager.stop();
       logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
@@ -81,7 +83,7 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
     if (failures.length === 1) {
       throw failures[0];
     }
-    throw new AggregateError(failures, `${failures.length} shutdown steps failed`);
+    throw new AggregateError(failures, `${failures.length} shutdown steps failed: ${failureDetails.join('; ')}`);
   }
 
   logger.info('SYSTEM', 'Worker shutdown complete');

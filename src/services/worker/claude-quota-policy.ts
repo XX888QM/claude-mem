@@ -1,4 +1,5 @@
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 /** This fork must not spend the Claude subscription. Env `false` is the test escape. */
@@ -7,10 +8,13 @@ export function isClaudeSubscriptionDisallowed(): boolean {
   if (override === 'false') return false;
   if (override === 'true') return true;
   try {
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    return settings.CLAUDE_MEM_DISALLOW_CLAUDE_QUOTA === 'true';
+    // Do not use a defaults reader that can turn a corrupt file into "false".
+    const document = readJsonFileWithBom<unknown>(USER_SETTINGS_PATH);
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return true;
+    const target = settingsTarget(document as SettingsDocument);
+    return !Object.hasOwn(target, 'CLAUDE_MEM_DISALLOW_CLAUDE_QUOTA') || target.CLAUDE_MEM_DISALLOW_CLAUDE_QUOTA !== 'false';
   } catch {
-    return false;
+    return true;
   }
 }
 

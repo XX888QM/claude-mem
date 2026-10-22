@@ -11,7 +11,7 @@ describe('viewer provider settings', () => {
   it('offers Codex Luna and Grok provider controls', () => {
     expect(source).toContain('<option value="codex">Codex</option>');
     expect(source).toContain('<option value="grok">Grok</option>');
-    expect(source).toContain('<option value="gpt-5.6-luna">GPT-5.6 Luna</option>');
+    expect(source).toContain("updateSetting('CLAUDE_MEM_CODEX_MODEL', e.target.value)");
     expect(source).toContain('CLAUDE_MEM_CODEX_REASONING_EFFORT');
     expect(source).toContain('CLAUDE_MEM_GROK_REASONING_EFFORT');
   });

@@ -3,9 +3,7 @@
  *
  * OpenCode's loader walks `Object.values(module)` and throws
  * `TypeError("Plugin export is not a function")` if ANY export is not callable,
- * which silently disabled the whole plugin because index.ts also exports the
- * REGISTERED_OPENCODE_HOOKS / REAL_OPENCODE_EVENT_TYPES const arrays the
- * contract test asserts on. Ship only the plugin function from this entry and
- * keep index.ts as the testable module.
+ * as the installed OpenCode 1.18.35 does. Ship only the V1 hook factory here;
+ * index.ts retains the modern id/server/setup definition for definition loaders.
  */
-export { ClaudeMemPlugin as default } from './index.js';
+export { createV1Hooks as default } from './v1.js';

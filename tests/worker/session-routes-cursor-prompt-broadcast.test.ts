@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import type { Request, Response } from 'express';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes.js';
@@ -11,6 +11,7 @@ describe('SessionRoutes Cursor prompt broadcast', () => {
   });
 
   afterEach(() => {
+    setSystemTime();
     store.close();
   });
 
@@ -52,8 +53,6 @@ describe('SessionRoutes Cursor prompt broadcast', () => {
     const routes = new (SessionRoutes as any)(
       sessionManager,
       dbManager,
-      {},
-      {},
       {},
       {},
       {},
@@ -144,5 +143,20 @@ describe('SessionRoutes Cursor prompt broadcast', () => {
     expect(broadcasts[0]?.platform_source).toBe('claude');
     expect(getInitializeCalls()).toBe(1);
     expect(getGeneratorStarts()).toBe(1);
+  });
+
+  it('publishes each exact Cursor prompt ID when native turns share a timestamp', async () => {
+    const { routes, broadcasts, chromaSyncs, getGeneratorStarts } = makeRoutes();
+    setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
+    const base = { contentSessionId: 'cursor-native-turns', project: 'claude-mem', platformSource: 'cursor' };
+    for (const nativePromptId of ['cursor-1', 'cursor-2']) {
+      await invokeInit(routes, { ...base, nativePromptId, prompt: `prompt ${nativePromptId}` });
+    }
+    const rows = store.db.query('SELECT id, prompt_text FROM user_prompts ORDER BY id').all() as Array<{ id: number; prompt_text: string }>;
+    expect(broadcasts.map(({ id, prompt_text }) => ({ id, prompt_text }))).toEqual(rows);
+    expect(chromaSyncs).toEqual(rows.map(row => row.id));
+    expect(getGeneratorStarts()).toBe(0);
+    await invokeInit(routes, { ...base, nativePromptId: 'cursor-1', prompt: 'prompt cursor-1' });
+    expect(broadcasts).toHaveLength(2);
   });
 });

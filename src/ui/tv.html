@@ -190,6 +190,7 @@
     claude: '#c15f3c',
     codex: '#4f9d8c',
     cursor: '#8b7ad6',
+    'antigravity-cli': '#0284c7',
   };
 
   function platformSource(value) {
@@ -378,6 +379,21 @@
       const lines = [];
       let line = '';
       for (const word of words) {
+        if (ctx.measureText(word).width > maxWidth) {
+          if (line) lines.push(line);
+          let chunk = '';
+          for (const character of Array.from(word)) {
+            const candidate = chunk + character;
+            if (chunk && ctx.measureText(candidate).width > maxWidth) {
+              lines.push(chunk);
+              chunk = character;
+            } else {
+              chunk = candidate;
+            }
+          }
+          line = chunk;
+          continue;
+        }
         const candidate = line ? line + ' ' + word : word;
         if (ctx.measureText(candidate).width > maxWidth && line) {
           lines.push(line);

@@ -26,6 +26,9 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
+import { withRetry } from './retry.js';
+import type { ObserverRequestLabel } from './OpenAICompatibleProvider.js';
 
 interface GrokConfig {
   apiKey: string;
@@ -148,10 +151,31 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
   }
 
   protected async query(
+    history: ConversationMessage[], config: GrokConfig,
+    signalOrSession?: AbortSignal | ActiveSession,
+    perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
+    activeSession?: ActiveSession,
+  ): Promise<ProviderQueryResult> {
+    const session = activeSession ?? (signalOrSession && 'sessionDbId' in signalOrSession ? signalOrSession : undefined);
+    const signal = session?.abortController.signal ?? (signalOrSession && !('sessionDbId' in signalOrSession) ? signalOrSession : undefined);
+    return withRetry(attemptSignal => this.querySingle(history, config, attemptSignal, perAttemptTimeoutMs, undefined, label, session), {
+      maxRetries: 0, paidSendBudget, abortSignal: signal, attemptDeadlineOwnedByCaller: true, label: 'Grok CLI',
+    });
+  }
+
+  private async querySingle(
     history: ConversationMessage[],
     config: GrokConfig,
-    session?: ActiveSession,
+    signalOrSession?: AbortSignal | ActiveSession,
+    _perAttemptTimeoutMs?: number,
+    _paidSendBudget?: PaidSendBudget,
+    _label?: ObserverRequestLabel,
+    activeSession?: ActiveSession,
   ): Promise<ProviderQueryResult> {
+    const session = activeSession ?? (signalOrSession && 'sessionDbId' in signalOrSession ? signalOrSession : undefined);
+    const signal = session?.abortController.signal ?? (signalOrSession && !('sessionDbId' in signalOrSession) ? signalOrSession : undefined);
     // Enforce cooldown at query time (not only at generator start) so pool waiters
     // cannot bypass a rate/quota pause that landed while they were queued.
     if (isGrokQuotaCooldownActive()) {
@@ -168,7 +192,7 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
     );
     const timeoutMs = resolveGrokExecTimeoutMs(settings.CLAUDE_MEM_GROK_EXEC_TIMEOUT_MS);
 
-    const releaseSlot = await acquireGrokSlot(maxConcurrent, session?.abortController.signal);
+    const releaseSlot = await acquireGrokSlot(maxConcurrent, signal);
 
     // Re-check after waiting for a slot — another call may have entered cooldown.
     if (isGrokQuotaCooldownActive()) {
@@ -215,7 +239,7 @@ export class GrokProvider extends OpenAICompatibleProvider<GrokConfig> {
         source: session?.lastGeneratorSource,
       });
       try {
-        const content = await runGrokExec(args, session?.abortController.signal, grokHome, timeoutMs);
+        const content = await runGrokExec(args, signal, grokHome, timeoutMs);
         const normalized = normalizeGrokObserverXml(sanitizeGrokOutput(content));
         if (!normalized) {
           // Nothing to store — return empty so the parent can skip without
@@ -512,6 +536,8 @@ function looksLikeObserverXml(text: string): boolean {
 }
 
 function isGrokLimitProse(text: string): boolean {
+  // Captured observations may describe a quota error; their text is data, not CLI status.
+  if (/<(observation|summary)\b[^>]*>[\s\S]*?<\/\1>|<skip_summary\b[^>]*\/>/i.test(text)) return false;
   const lower = text.toLowerCase();
   return (
     lower.includes('session limit')
@@ -528,6 +554,21 @@ function classifyGrokExecError(code: number | null, stderr: string, stdout: stri
     `grok exec failed with code ${code ?? 'unknown'}${diagnostic ? `: ${diagnostic}` : ''}`,
   );
   const lower = diagnostic.toLowerCase();
+
+  if (lower.includes('api http 429')) {
+    return new ClassifiedProviderError('Grok rate limited', { kind: 'rate_limit', cause });
+  }
+  if (
+    lower.includes('transport failure')
+    || lower.includes('request or credential renewal failed')
+    || lower.includes('credential renewal unavailable')
+    || /api http 5\d\d\b/.test(lower)
+  ) {
+    return new ClassifiedProviderError('Grok temporarily unavailable', {
+      kind: 'transient', cause,
+      ...(lower.includes('credential renewal unavailable') ? { paidSendOutcome: 'refused_before_work' as const } : {}),
+    });
+  }
 
   if (
     lower.includes('usage limit')
@@ -558,6 +599,8 @@ function classifyGrokExecError(code: number | null, stderr: string, stdout: stri
   }
   if (
     lower.includes('not logged in')
+    || lower.includes('api http 401')
+    || lower.includes('grok login required')
     || lower.includes('authentication')
     || lower.includes('unauthorized')
     || lower.includes('sign in')

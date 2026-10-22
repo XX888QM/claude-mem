@@ -27,7 +27,7 @@ test('failed SDK results cannot save a session or become a knowledge answer', as
     { type: 'assistant', session_id: 'failed', message: { content: [{ type: 'text', text: 'Not logged in' }] } },
     { type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'failed' },
   ];
-  await expect(agent.prime(corpus)).rejects.toThrow('Knowledge priming failed');
+  await expect(agent.prime(corpus)).rejects.toThrow('Knowledge prime failed');
   await expect(agent.query(corpus, 'question')).rejects.toThrow('Knowledge query failed');
   expect(corpus.session_id).toBe('original');
   expect(write).not.toHaveBeenCalled();
