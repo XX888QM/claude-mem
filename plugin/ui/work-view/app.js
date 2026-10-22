@@ -1,4 +1,3 @@
-import './zh.js'; // Chinese display layer (fork)
 import { setupTeamView } from './team-view.js';
 import { relativeTime, requestElapsed } from './view-model.js';
 import { presentWork, effectiveStatus, statusCategory, contentSignature, handoffText, scopeWork, sortWork } from './presentation.js';

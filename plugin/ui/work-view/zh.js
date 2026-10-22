@@ -184,6 +184,14 @@ function walk(node) {
 }
 
 function run() {
+  try {
+    start();
+  } catch (error) {
+    console.warn('zh.js disabled:', error);
+  }
+}
+
+function start() {
   document.documentElement.lang = 'zh-CN';
   document.title = translate(document.title);
   walk(document.body);
